@@ -1,0 +1,65 @@
+name: Androidアプリをビルド
+
+# android/ を変えてpushするとAPKを作り直し、リリース「android-latest」に載せる。
+# 画面（Web）だけの変更では動かない（アプリは画面をネットから読むので、入れ直しが要らない）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      # 署名鍵はリポジトリのシークレットに置く（README の「Androidアプリ」を参照）。
+      # 同じ鍵で署名したAPKだけが上書きインストールできる。鍵がないとビルドごとに別の鍵になり、入れ直しのたびに記録が消える。
+      - name: 署名鍵を用意する
+        env:
+          KEYSTORE_B64: ${{ secrets.DAYFLOW_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/dayflow.jks"
+            echo "DAYFLOW_KEYSTORE_FILE=$RUNNER_TEMP/dayflow.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::署名鍵のシークレット DAYFLOW_KEYSTORE_B64 がありません。一時的な鍵で署名します（上書きインストール不可）。"
+          fi
+
+      - name: APKを作る
+        env:
+          DAYFLOW_KEYSTORE_PASSWORD: ${{ secrets.DAYFLOW_KEYSTORE_PASSWORD }}
+        run: gradle -p android --no-daemon assembleRelease -PbuildNumber=${{ github.run_number }}
+
+      - name: ファイル名をそろえる
+        run: cp android/app/build/outputs/apk/release/app-release.apk dayflow.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dayflow-apk
+          path: dayflow.apk
+
+      - name: リリースに載せる
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view android-latest >/dev/null 2>&1; then
+            gh release create android-latest --title "DayFlow Androidアプリ（最新）" \
+              --notes "スマホでこのページを開き、dayflow.apk をダウンロードしてインストールする。ビルド番号は実行のたびに増える。"
+          fi
+          gh release upload android-latest dayflow.apk --clobber

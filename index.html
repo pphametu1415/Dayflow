@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f6f7f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12171d" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>DayFlow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+<main>
+
+<!-- 今日 -->
+<section class="view active" data-view="day">
+  <header class="datebar">
+    <button class="iconbtn" id="prevDay" aria-label="前の日">‹</button>
+    <div class="datebar-mid">
+      <h1 id="dateTitle"></h1>
+      <p class="sub" id="dateSub"></p>
+    </div>
+    <button class="iconbtn" id="nextDay" aria-label="次の日">›</button>
+  </header>
+  <div class="metrics" aria-label="この日の合計">
+    <div><span>予定</span><b id="mPlan">0分</b></div>
+    <div><span>実績</span><b id="mAct">0分</b></div>
+    <div><span>うち勉強</span><b id="mStudy">0分</b></div>
+  </div>
+
+  <div id="nowCard"></div>
+
+  <div class="toolbar">
+    <button class="btn" id="pickBtn">予定なしで開始</button>
+    <button class="btn" id="adjustBtn">予定を調整</button>
+    <button class="btn quiet" id="todayBtn">今日へ</button>
+  </div>
+
+  <div class="tl-head"><button id="tlToggle" aria-label="タイムラインの表示範囲を切り替える">全日</button><span>予定</span><span>実績</span></div>
+  <div id="timeline" class="timeline"></div>
+  <p class="hint">予定の列をタップで予定を追加、実績の列をタップで後から実績を追加。予定は長押しで移動。</p>
+
+  <div class="pad">
+    <button class="btn wide" id="reviewBtn">この日を振り返る</button>
+    <div id="reviewMini"></div>
+  </div>
+</section>
+
+<!-- 計画 -->
+<section class="view" data-view="plan">
+  <header class="pagehead">
+    <h1>学習計画</h1>
+    <p class="sub" id="planSub"></p>
+  </header>
+  <div class="tiles" id="planTiles"></div>
+  <div id="backlog"></div>
+  <div class="tabs" role="group" aria-label="表示の切り替え" id="planTabs">
+    <button data-f="today">今日</button>
+    <button data-f="open">未完了</button>
+    <button data-f="all">すべて</button>
+  </div>
+  <div id="planDays" class="plandays"></div>
+  <details class="rules" id="planRules"></details>
+</section>
+
+<!-- 週次 -->
+<section class="view" data-view="week">
+  <header class="datebar">
+    <button class="iconbtn" id="prevWeek" aria-label="前の週">‹</button>
+    <div class="datebar-mid">
+      <h1 id="weekTitle"></h1>
+      <p class="sub">週のふりかえり</p>
+    </div>
+    <button class="iconbtn" id="nextWeek" aria-label="次の週">›</button>
+  </header>
+  <div id="weekBody" class="pad"></div>
+</section>
+
+<!-- 設定 -->
+<section class="view" data-view="settings">
+  <header class="pagehead"><h1>設定</h1></header>
+  <div id="settingsBody" class="pad"></div>
+</section>
+
+</main>
+</div>
+
+<nav class="tabbar" aria-label="画面の切り替え">
+  <button class="active" data-nav="day">今日</button>
+  <button data-nav="plan">計画</button>
+  <button data-nav="week">週次</button>
+  <button data-nav="settings">設定</button>
+</nav>
+
+<!-- 予定の追加・編集 -->
+<div class="sheetback" id="planBack"><div class="sheet" role="dialog" aria-labelledby="planSheetTitle">
+  <h2 id="planSheetTitle">予定を追加</h2>
+  <form id="planForm">
+    <div class="formgrid">
+      <label class="field full" id="planCardWrap">何をする<select id="planCard"></select></label>
+      <p class="field full unitname" id="planUnitName" hidden></p>
+      <label class="field">開始時刻<input id="planStart" type="time" step="300" required></label>
+      <label class="field">予定時間（分）<input id="planMinutes" type="number" inputmode="numeric" min="5" max="600" step="5" required></label>
+      <label class="field full switch"><span>固定する<small>調整や長押しで動かさない</small></span><input id="planFixed" type="checkbox"></label>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn danger" id="planDelete">削除</button>
+      <button type="button" class="btn" id="planSkip">スキップ</button>
+      <button type="button" class="btn" id="planStartNow">開始</button>
+      <button class="btn primary">保存</button>
+    </div>
+  </form>
+</div></div>
+
+<!-- 実績の追加・修正 -->
+<div class="sheetback" id="sesBack"><div class="sheet" role="dialog" aria-labelledby="sesSheetTitle">
+  <h2 id="sesSheetTitle">実績を修正</h2>
+  <form id="sesForm">
+    <div class="formgrid">
+      <label class="field full">何をした<select id="sesWhat"></select></label>
+      <label class="field">開始<input id="sesStart" type="time" required></label>
+      <label class="field">終了<input id="sesEnd" type="time"></label>
+    </div>
+    <p class="sub" id="sesNote"></p>
+    <div class="actions">
+      <button type="button" class="btn danger" id="sesDelete">削除</button>
+      <button class="btn primary">保存</button>
+    </div>
+  </form>
+</div></div>
+
+<!-- 予定なしで開始 -->
+<div class="sheetback" id="pickBack"><div class="sheet" role="dialog" aria-labelledby="pickTitle">
+  <h2 id="pickTitle">いまから何を始める？</h2>
+  <div id="pickList" class="picklist"></div>
+</div></div>
+
+<!-- コマの完了チェック -->
+<div class="sheetback" id="unitBack"><div class="sheet" role="dialog" aria-labelledby="unitTitle">
+  <h2 id="unitTitle"></h2>
+  <p class="sub" id="unitSub"></p>
+  <div id="unitChecks" class="checks big"></div>
+  <label class="field full">メモ<textarea id="unitMemo" placeholder="つまずいた論点、間違えた問題番号など"></textarea></label>
+  <div class="actions"><button type="button" class="btn primary" id="unitSave">保存</button></div>
+</div></div>
+
+<!-- 予定の調整 -->
+<div class="sheetback" id="adjustBack"><div class="sheet" role="dialog" aria-labelledby="adjTitle">
+  <h2 id="adjTitle">まだ始めていない予定を動かす</h2>
+  <p class="sub">固定した予定と、実績のある予定は動かしません。</p>
+  <div class="shiftgrid">
+    <button class="btn" data-shift="-60">−60分</button>
+    <button class="btn" data-shift="-30">−30分</button>
+    <button class="btn" data-shift="30">＋30分</button>
+    <button class="btn" data-shift="60">＋60分</button>
+  </div>
+  <div class="actions">
+    <button class="btn" id="reflowBtn">今から15分あけて詰める</button>
+    <button class="btn" id="undoAdjust">元に戻す</button>
+  </div>
+</div></div>
+
+<!-- 振り返り -->
+<div class="sheetback" id="reviewBack"><div class="sheet" role="dialog" aria-labelledby="revTitle">
+  <h2 id="revTitle">この日の振り返り</h2>
+  <p class="sub">いまの感覚を1タップで。</p>
+  <div class="field full"><span>勉強</span><div class="moodrow" data-review="study"><button type="button" data-score="1">😕</button><button type="button" data-score="2">🙂</button><button type="button" data-score="3">😄</button></div></div>
+  <div class="field full"><span>運動</span><div class="moodrow" data-review="exercise"><button type="button" data-score="1">😕</button><button type="button" data-score="2">🙂</button><button type="button" data-score="3">😄</button></div></div>
+  <div class="field full"><span>睡眠</span><div class="moodrow" data-review="sleep"><button type="button" data-score="1">😕</button><button type="button" data-score="2">🙂</button><button type="button" data-score="3">😄</button></div></div>
+  <div class="formgrid">
+    <label class="field">睡眠時間（時間）<input id="sleepHours" type="number" inputmode="decimal" min="0" max="16" step="0.25" placeholder="例 7.0"></label>
+    <label class="field">ひとこと<input id="reviewNote" maxlength="80" placeholder="なくてもOK"></label>
+  </div>
+  <div class="actions">
+    <button type="button" class="btn" id="clearReview">消す</button>
+    <button type="button" class="btn primary" id="saveReview">保存</button>
+  </div>
+</div></div>
+
+<!-- カード -->
+<div class="sheetback" id="cardBack"><div class="sheet" role="dialog" aria-labelledby="cardSheetTitle">
+  <h2 id="cardSheetTitle">カードを追加</h2>
+  <form id="cardForm">
+    <div class="formgrid">
+      <label class="field full">名前<input id="cardName" maxlength="40" required></label>
+      <label class="field">カテゴリ<select id="cardCategory"></select></label>
+      <label class="field">標準時間（分）<input id="cardMinutes" type="number" inputmode="numeric" min="5" max="600" step="5" required></label>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn danger" id="cardDelete">削除</button>
+      <button class="btn primary">保存</button>
+    </div>
+  </form>
+</div></div>
+
+<!-- 計測が続いているとき -->
+<div class="sheetback" id="overdueBack"><div class="sheet" role="dialog" aria-labelledby="odTitle">
+  <h2 id="odTitle">計測が続いています</h2>
+  <p id="odText"></p>
+  <div class="stack">
+    <button class="btn primary" id="odNow">いま終了する</button>
+    <button class="btn" id="odPlanned"></button>
+    <button class="btn quiet" id="odKeep">まだ続けている</button>
+  </div>
+</div></div>
+
+<!-- 確認 -->
+<div class="sheetback" id="confirmBack"><div class="sheet" role="alertdialog" aria-labelledby="cfText">
+  <p id="cfText"></p>
+  <div class="actions">
+    <button class="btn" id="cfNo">やめる</button>
+    <button class="btn primary" id="cfYes">実行する</button>
+  </div>
+</div></div>
+
+<div class="toast" id="toast" role="status"></div>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+
+<script src="js/db.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

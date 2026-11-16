@@ -1,0 +1,14 @@
+# ビルドなし。リポジトリの中身をそのまま公開する。
+[build]
+  publish = "."
+
+# 更新をすぐ反映させるため、service worker と計画データはキャッシュさせない。
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/data/*"
+  [headers.values]
+    Cache-Control = "no-cache"

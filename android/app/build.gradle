@@ -1,0 +1,56 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 画面（Web）の置き場所。変えるときは -PappUrl=https://… を付けてビルドするか、ここを書き換える。
+def appUrl = providers.gradleProperty('appUrl').getOrElse('https://dayflow-pp1415.netlify.app/')
+// GitHub Actions が実行番号を渡す。入れ直しのたびに数字が増える必要がある。
+def buildNumber = providers.gradleProperty('buildNumber').getOrElse('1') as Integer
+// 署名鍵。なければデバッグ用の鍵で署名する（その場合、ビルドごとに鍵が変わり上書きインストールできない）。
+def keystorePath = System.getenv('DAYFLOW_KEYSTORE_FILE')
+
+android {
+    namespace 'app.dayflow.shell'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'app.dayflow.shell'
+        minSdk 29
+        targetSdk 35
+        versionCode buildNumber
+        versionName "2.0.${buildNumber}"
+        buildConfigField 'String', 'APP_URL', "\"${appUrl}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv('DAYFLOW_KEYSTORE_PASSWORD')
+                keyAlias 'dayflow'
+                keyPassword System.getenv('DAYFLOW_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystorePath ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

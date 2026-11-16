@@ -1,0 +1,4 @@
+// ビルドは GitHub Actions（.github/workflows/android.yml）が Gradle 8.11.1 で行う。
+plugins {
+    id 'com.android.application' version '8.9.1' apply false
+}
