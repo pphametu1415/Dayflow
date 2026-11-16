@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#f6f7f3" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#12171d" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#8fdcec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e3152" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <title>DayFlow</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -20,19 +20,22 @@
 
 <!-- 今日 -->
 <section class="view active" data-view="day">
-  <header class="datebar">
-    <button class="iconbtn" id="prevDay" aria-label="前の日">‹</button>
-    <div class="datebar-mid">
-      <h1 id="dateTitle"></h1>
-      <p class="sub" id="dateSub"></p>
+  <header class="sea">
+    <div class="datebar">
+      <button class="iconbtn" id="prevDay" aria-label="前の日">‹</button>
+      <div class="datebar-mid">
+        <h1 id="dateTitle"></h1>
+        <p class="sub" id="dateSub"></p>
+      </div>
+      <button class="iconbtn" id="nextDay" aria-label="次の日">›</button>
     </div>
-    <button class="iconbtn" id="nextDay" aria-label="次の日">›</button>
+    <div class="metrics" aria-label="この日の合計">
+      <div><span>予定</span><b id="mPlan">0分</b></div>
+      <div><span>実績</span><b id="mAct">0分</b></div>
+      <div><span>うち勉強</span><b id="mStudy">0分</b></div>
+    </div>
+    <div class="mate" id="dayMate"></div>
   </header>
-  <div class="metrics" aria-label="この日の合計">
-    <div><span>予定</span><b id="mPlan">0分</b></div>
-    <div><span>実績</span><b id="mAct">0分</b></div>
-    <div><span>うち勉強</span><b id="mStudy">0分</b></div>
-  </div>
 
   <div id="nowCard"></div>
 
@@ -54,7 +57,7 @@
 
 <!-- 計画 -->
 <section class="view" data-view="plan">
-  <header class="pagehead">
+  <header class="sea pagehead">
     <h1>学習計画</h1>
     <p class="sub" id="planSub"></p>
   </header>
@@ -71,20 +74,22 @@
 
 <!-- 週次 -->
 <section class="view" data-view="week">
-  <header class="datebar">
-    <button class="iconbtn" id="prevWeek" aria-label="前の週">‹</button>
-    <div class="datebar-mid">
-      <h1 id="weekTitle"></h1>
-      <p class="sub">週のふりかえり</p>
+  <header class="sea">
+    <div class="datebar">
+      <button class="iconbtn" id="prevWeek" aria-label="前の週">‹</button>
+      <div class="datebar-mid">
+        <h1 id="weekTitle"></h1>
+        <p class="sub">週のふりかえり</p>
+      </div>
+      <button class="iconbtn" id="nextWeek" aria-label="次の週">›</button>
     </div>
-    <button class="iconbtn" id="nextWeek" aria-label="次の週">›</button>
   </header>
   <div id="weekBody" class="pad"></div>
 </section>
 
 <!-- 設定 -->
 <section class="view" data-view="settings">
-  <header class="pagehead"><h1>設定</h1></header>
+  <header class="sea pagehead"><h1>設定</h1></header>
   <div id="settingsBody" class="pad"></div>
 </section>
 
@@ -92,10 +97,10 @@
 </div>
 
 <nav class="tabbar" aria-label="画面の切り替え">
-  <button class="active" data-nav="day">今日</button>
-  <button data-nav="plan">計画</button>
-  <button data-nav="week">週次</button>
-  <button data-nav="settings">設定</button>
+  <button class="active" data-nav="day"><i data-icon="day"></i>今日</button>
+  <button data-nav="plan"><i data-icon="plan"></i>計画</button>
+  <button data-nav="week"><i data-icon="week"></i>週次</button>
+  <button data-nav="settings"><i data-icon="settings"></i>設定</button>
 </nav>
 
 <!-- 予定の追加・編集 -->
@@ -152,8 +157,9 @@
 
 <!-- 予定の調整 -->
 <div class="sheetback" id="adjustBack"><div class="sheet" role="dialog" aria-labelledby="adjTitle">
-  <h2 id="adjTitle">まだ始めていない予定を動かす</h2>
-  <p class="sub">固定した予定と、実績のある予定は動かしません。</p>
+  <h2 id="adjTitle">予定を調整</h2>
+  <h3 class="sheetsec">時刻をずらす</h3>
+  <p class="sub">まだ始めていない予定を動かします。固定した予定と、実績のある予定は動かしません。</p>
   <div class="shiftgrid">
     <button class="btn" data-shift="-60">−60分</button>
     <button class="btn" data-shift="-30">−30分</button>
@@ -163,6 +169,24 @@
   <div class="actions">
     <button class="btn" id="reflowBtn">今から15分あけて詰める</button>
     <button class="btn" id="undoAdjust">元に戻す</button>
+  </div>
+  <h3 class="sheetsec">この日は勉強できない</h3>
+  <p class="sub">この日の学習コマを後ろへ送り、続きのコマを順番どおりに1つずつずらします。あふれた分は予備の枠に入ります。</p>
+  <div class="stack">
+    <button class="btn primary" id="cantBtn">この日は無理（コマを後ろへ送る）</button>
+    <button class="btn" id="undoCant" hidden>送ったコマを元に戻す</button>
+  </div>
+</div></div>
+
+<!-- この日は無理：送り先の確認 -->
+<div class="sheetback" id="cantBack"><div class="sheet" role="dialog" aria-labelledby="cantTitle">
+  <h2 id="cantTitle">コマを後ろへ送る</h2>
+  <p id="cantSummary"></p>
+  <p class="notice warn" id="cantWarn" hidden></p>
+  <ol class="movelist" id="cantList"></ol>
+  <div class="actions">
+    <button class="btn" id="cantNo">やめる</button>
+    <button class="btn primary" id="cantYes">後ろへ送る</button>
   </div>
 </div></div>
 
@@ -223,6 +247,7 @@
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
 <script src="js/db.js"></script>
+<script src="js/sea.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

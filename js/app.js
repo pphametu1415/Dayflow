@@ -1,8 +1,8 @@
 /* DayFlow v2 — 画面。データ操作は js/db.js（DFDB）に置き、ここは表示と入力だけを受け持つ。 */
 (() => {
   'use strict';
-  const DB = window.DFDB;
-  const APP_VERSION = '2.2.0';
+  const DB = window.DFDB, SEA = window.DFSea;
+  const APP_VERSION = '2.3.0';
   const START = 6 * 60, END = 24 * 60, HOURPX = 64, PPM = HOURPX / 60;
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -37,12 +37,18 @@
   const weekStart = k => { const d = DB.keyToDate(k); return addDays(k, -((d.getDay() + 6) % 7)); };
   const sessMin = s => Math.max(1, Math.round(((s.endedAt == null ? Date.now() : s.endedAt) - s.startedAt) / 60000));
 
-  const plansOf = k => S.plans.filter(p => p.date === k).sort((a, b) => a.start - b.start);
+  /* absorbed：予備の枠をほぼ使い切った予定（「この日は無理」で中身を入れた残りが30分未満）。画面にも通知にも出さない。 */
+  const plansOf = k => S.plans.filter(p => p.date === k && !p.absorbed).sort((a, b) => a.start - b.start);
   const sessionsOf = k => S.sessions.filter(s => s.date === k).sort((a, b) => a.startedAt - b.startedAt);
   const sessionsOfPlan = id => S.sessions.filter(s => s.planId === id);
   const runningS = () => S.sessions.find(s => s.endedAt == null) || null;
   const planById = id => S.plans.find(p => p.id === id);
   const unitById = id => S.units.find(u => u.id === id);
+  /* コマの日付は「予定の日付」で見る（後ろへ送ったコマは、計画データの日付と予定の日付がずれる）。 */
+  const unitPlan = u => planById('u-' + u.id);
+  const uDate = u => { const p = unitPlan(u); return p ? p.date : u.date; };
+  const uStart = u => { const p = unitPlan(u); return p ? p.start : 0; };
+  const wdOf = k => WD[DB.keyToDate(k).getDay()];
   const cardById = id => S.cards.find(c => c.id === id);
   const unitCheckable = u => u.lec || !!u.exLabel;
   const unitDone = u => unitCheckable(u) && (!u.lec || u.lecDone) && (!u.exLabel || u.exDone);
@@ -101,6 +107,7 @@
     const d = DB.keyToDate(dateKey);
     $('#dateTitle').textContent = `${d.getMonth() + 1}月${d.getDate()}日（${WD[d.getDay()]}）`;
     $('#dateSub').textContent = dateKey === today() ? '今日' : dateKey;
+    $('#dayMate').innerHTML = SEA.byWeekday[d.getDay()];
     const ps = plansOf(dateKey).filter(p => p.status !== 'skipped'), ss = sessionsOf(dateKey);
     $('#mPlan').textContent = fmt(ps.reduce((a, p) => a + p.minutes, 0));
     $('#mAct').textContent = fmt(ss.reduce((a, s) => a + sessMin(s), 0));
@@ -177,8 +184,9 @@
     }
     if (dateKey === today()) {
       const nm = nowMin();
-      if (nm >= tlFrom && nm <= END) h += `<div class="nowline" id="nowline" style="top:${(nm - tlFrom) * PPM}px"><i></i></div>`;
+      if (nm >= tlFrom && nm <= END) h += `<div class="nowline" id="nowline" style="top:${(nm - tlFrom) * PPM}px"><span class="nowfish">${SEA.nowFish}</span></div>`;
     }
+    h += `<div class="seabed" aria-hidden="true"><span class="weed">${SEA.seaweed}</span><span class="coral">${SEA.coral}</span></div>`;
     el.innerHTML = h;
     bindDrag();
   }
@@ -431,6 +439,101 @@
     hide('#adjustBack'); await commit(); toast('動かす前に戻しました');
   };
 
+  /* ---------- この日は無理（コマを後ろへ送る）----------
+     決まり：
+     - 送るのは学習コマだけ（未完了・実績なし・固定していないもの）。運動などの予定は動かさない。
+     - 科目ごとに、講義の順番を保ったまま後ろの枠へ1つずつずらす。
+     - 途中に予備の空きがあれば先にそこへ入れ、ずらす範囲を小さくする。
+     - 予備が足りない分は、計画の最終日の翌日以降（20:00）に置いて知らせる。
+     - 直前の1回は元に戻せる（meta の lastCant に動かす前の予定を残す）。 */
+  function planCant(D) {
+    const t = today(), nm = nowMin();
+    const usable = p => p.date > D && (p.date > t || (p.date === t && p.start > nm));   // これから使える枠
+    const cmp = (a, b) => (a.date === b.date ? a.start - b.start : (a.date < b.date ? -1 : 1));
+    const after = (a, c) => a.date > c.date || (a.date === c.date && a.start >= c.start + c.minutes);
+    const items = S.units.filter(u => u.k !== 'y').map(u => ({ u, p: unitPlan(u) }))
+      .filter(x => x.p && !x.p.absorbed && !x.p.fixed && x.p.date >= D && !unitDone(x.u) && !sessionsOfPlan(x.p.id).length)
+      .filter(x => !(x.p.status === 'skipped' && usable(x.p)));
+    const buffers = S.units.filter(u => u.k === 'y').map(unitPlan)
+      .filter(p => p && !p.absorbed && !p.fixed && p.status !== 'skipped' && usable(p) && !sessionsOfPlan(p.id).length)
+      .map(p => ({ id: p.id, date: p.date, start: p.start, minutes: p.minutes, changed: false })).sort(cmp);
+    let overflowDate = S.units.reduce((m, u) => { const d = uDate(u); return d > m ? d : m; }, D);
+    const moves = [];
+    for (const k of [...new Set(items.map(x => x.u.k))]) {
+      const chain = items.filter(x => x.u.k === k)
+        .sort((a, b) => String(a.u.month || '').localeCompare(String(b.u.month || '')) || (a.u.seq || 0) - (b.u.seq || 0));
+      if (!chain.some(x => !usable(x.p))) continue;
+      const pos = chain.filter(x => usable(x.p)).map(x => ({ date: x.p.date, start: x.p.start, owner: x.u.id })).sort(cmp);
+      let pi = 0, cur = { date: D, start: 24 * 60, minutes: 0 };
+      for (const x of chain) {
+        const next = pos[pi];
+        if (next && next.owner === x.u.id) { pi++; cur = { date: next.date, start: next.start, minutes: x.p.minutes }; continue; }   // 自分の枠のまま
+        const buf = buffers.find(b => b.minutes >= x.p.minutes && after(b, cur) && (!next || cmp(b, next) < 0));
+        let to, via = 'slot';
+        if (buf) { to = { date: buf.date, start: buf.start }; buf.start += x.p.minutes; buf.minutes -= x.p.minutes; buf.changed = true; via = 'buffer'; }
+        else if (next) { to = { date: next.date, start: next.start }; pi++; }
+        else { overflowDate = addDays(overflowDate > cur.date ? overflowDate : cur.date, 1); to = { date: overflowDate, start: 20 * 60 }; via = 'overflow'; }
+        cur = { date: to.date, start: to.start, minutes: x.p.minutes };
+        moves.push({ plan: x.p, to, via, displaced: !usable(x.p) });
+      }
+    }
+    moves.sort((a, b) => cmp(a.to, b.to));
+    return {
+      date: D, moves, buffers: buffers.filter(b => b.changed),
+      displaced: moves.filter(m => m.displaced).length, shifted: moves.filter(m => !m.displaced).length,
+      overflow: moves.filter(m => m.via === 'overflow')
+    };
+  }
+  let cantPlan = null;
+  function openCant() {
+    const plan = planCant(dateKey);
+    if (!plan.displaced) { toast('この日に送れる学習コマがありません'); return; }
+    cantPlan = plan;
+    const day = k => `${md(k)}（${wdOf(k)}）`;
+    $('#cantTitle').textContent = `${day(dateKey)}のコマを後ろへ送る`;
+    $('#cantSummary').textContent = `${plan.displaced}コマを後ろへ送ります。`
+      + (plan.shifted ? `続きの${plan.shifted}コマも、順番どおりに1つずつ後ろへずれます。` : '')
+      + (plan.buffers.length ? `予備の枠を${plan.buffers.length}つ使います。` : '');
+    $('#cantWarn').hidden = !plan.overflow.length;
+    if (plan.overflow.length) $('#cantWarn').textContent = `予備が足りないため、${plan.overflow.length}コマは計画の最終日より後（${md(plan.overflow[0].to.date)}以降）に入ります。翌月の計画と重なる場合があります。`;
+    $('#cantList').innerHTML = plan.moves.map(m =>
+      `<li><b>${esc(m.plan.name)}</b><span>${day(m.plan.date)}${hm(m.plan.start)} → ${day(m.to.date)}${hm(m.to.start)}${m.via === 'buffer' ? '・予備の枠' : m.via === 'overflow' ? '・計画の外' : ''}</span></li>`).join('');
+    hide('#adjustBack'); show('#cantBack');
+  }
+  $('#cantBtn').onclick = openCant;
+  $('#cantNo').onclick = () => { cantPlan = null; hide('#cantBack'); };
+  $('#cantYes').onclick = async () => {
+    const plan = cantPlan; if (!plan) return;
+    cantPlan = null;
+    const before = [], next = [];
+    for (const m of plan.moves) {
+      before.push({ ...m.plan });
+      next.push({ ...m.plan, date: m.to.date, start: m.to.start, status: 'active', notifyAt: null, userEdited: true });
+    }
+    for (const b of plan.buffers) {
+      const p = planById(b.id); if (!p) continue;
+      before.push({ ...p });
+      next.push({ ...p, start: b.start, minutes: b.minutes, absorbed: b.minutes < 30, notifyAt: null, userEdited: true });
+    }
+    await DB.putMany('plans', next);
+    await DB.setMeta('lastCant', { at: Date.now(), date: plan.date, plans: before });
+    hide('#cantBack'); await commit(); toast(`${plan.moves.length}コマを組み直しました`);
+  };
+  $('#undoCant').onclick = async () => {
+    const last = S.meta.lastCant;
+    if (!last || !Array.isArray(last.plans)) return;
+    if (last.plans.some(o => sessionsOfPlan(o.id).length)) { toast('送ったあとに実績がついたコマがあるため、戻せません'); return; }
+    await DB.putMany('plans', last.plans);
+    await DB.setMeta('lastCant', null);
+    hide('#adjustBack'); await commit(); toast('送る前の予定に戻しました');
+  };
+  function openAdjust() {
+    const last = S.meta.lastCant, b = $('#undoCant');
+    b.hidden = !last;
+    if (last) b.textContent = `送ったコマを元に戻す（${md(last.date)}の分）`;
+    show('#adjustBack');
+  }
+
   /* ---------- 振り返り ---------- */
   const face = n => (n === 3 ? '😄' : n === 2 ? '🙂' : n === 1 ? '😕' : '—');
   function renderReviewMini() {
@@ -458,7 +561,8 @@
   /* ---------- 計画 ---------- */
   function renderPlan() {
     const metas = monthMetas(), meta = metas[metas.length - 1];
-    const units = S.units.slice().sort((a, b) => a.date.localeCompare(b.date) || (a.seq || 0) - (b.seq || 0));
+    const units = S.units.filter(u => { const p = unitPlan(u); return !(p && p.absorbed); })
+      .sort((a, b) => uDate(a).localeCompare(uDate(b)) || uStart(a) - uStart(b) || (a.seq || 0) - (b.seq || 0));
     const t = today();
     if (meta && meta.exam) {
       const left = Math.max(0, Math.round((DB.keyToDate(meta.exam) - DB.keyToDate(t)) / 86400000));
@@ -469,25 +573,27 @@
     const lecD = lecT.filter(u => u.lecDone).length, exD = exT.filter(u => u.exDone).length;
     const act = units.reduce((a, u) => a + unitActual(u), 0), est = units.reduce((a, u) => a + u.est, 0);
     const pct = (a, b) => (b ? Math.min(100, 100 * a / b) : 0);
+    // 進み具合を水位で見せる（タイルの下から水がたまる）
+    const tile = (label, main, p) => `<div class="tile water${p > 0 ? '' : ' dry'}" style="--p:${Math.round(p)}"><span>${label}</span><b>${main}</b></div>`;
     $('#planTiles').innerHTML =
-      `<div class="tile"><span>講義</span><b>${lecD}<small> / ${lecT.length}コマ</small></b><div class="bar"><i style="width:${pct(lecD, lecT.length)}%"></i></div></div>
-       <div class="tile"><span>演習・復習</span><b>${exD}<small> / ${exT.length}コマ</small></b><div class="bar"><i style="width:${pct(exD, exT.length)}%"></i></div></div>
-       <div class="tile"><span>実績</span><b>${hours(act)}<small> / ${hours(est)}時間</small></b><div class="bar"><i style="width:${pct(act, est)}%"></i></div></div>`;
+      tile('講義', `${lecD}<small> / ${lecT.length}コマ</small>`, pct(lecD, lecT.length)) +
+      tile('演習・復習', `${exD}<small> / ${exT.length}コマ</small>`, pct(exD, exT.length)) +
+      tile('実績', `${hours(act)}<small> / ${hours(est)}時間</small>`, pct(act, est));
 
-    const backlog = units.filter(u => u.date < t && unitCheckable(u) && !unitDone(u)).length;
+    const backlog = units.filter(u => uDate(u) < t && unitCheckable(u) && !unitDone(u)).length;
     const limit = (meta && meta.backlogLimit) || 4;
     $('#backlog').innerHTML = backlog > limit
       ? `<p class="notice warn">積み残しが${backlog}コマあります。新しい講義を止めて、回収を優先してください。</p>`
       : backlog > 0 ? `<p class="notice">積み残し ${backlog}コマ（${limit}コマを超えたら回収を優先）</p>` : '';
 
     $$('#planTabs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.f === planFilter ? 'true' : 'false'));
-    const shown = units.filter(u => planFilter === 'today' ? u.date === t : planFilter === 'open' ? (unitCheckable(u) && !unitDone(u)) : true);
+    const shown = units.filter(u => planFilter === 'today' ? uDate(u) === t : planFilter === 'open' ? (unitCheckable(u) && !unitDone(u)) : true);
     const run = runningS();
     const byDate = new Map();
-    shown.forEach(u => { if (!byDate.has(u.date)) byDate.set(u.date, []); byDate.get(u.date).push(u); });
+    shown.forEach(u => { const k = uDate(u); if (!byDate.has(k)) byDate.set(k, []); byDate.get(k).push(u); });
     let h = '';
     for (const [d, list] of byDate) {
-      const dd = DB.keyToDate(d), all = units.filter(u => u.date === d && unitCheckable(u));
+      const dd = DB.keyToDate(d), all = units.filter(u => uDate(u) === d && unitCheckable(u));
       const doneN = all.filter(unitDone).length;
       h += `<section class="pday${d === t ? ' today' : ''}"><div class="rail"><span class="d">${md(d)}</span><span class="w">${WD[dd.getDay()]}曜日</span>${d === t ? '<span class="badge">今日</span>' : ''}<span class="c">${all.length ? `完了 ${doneN}/${all.length}` : '予備日'}</span></div><div>`;
       for (const u of list) {
@@ -495,7 +601,7 @@
         const measured = unitMeasured(u);
         h += `<div class="unit${done ? ' done' : ''}" data-uid="${u.id}">
           <div class="head"><span class="pill ${u.k}">${esc(u.subj)}</span><span class="ttl">${esc(u.title)}</span></div>
-          ${p ? `<div class="time">${p.date !== u.date ? md(p.date) + ' ' : ''}${hm(p.start)}〜${hm(p.start + p.minutes)}${p.status === 'skipped' ? '・スキップ' : ''}</div>` : ''}
+          ${p ? `<div class="time">${hm(p.start)}〜${hm(p.start + p.minutes)}${p.status === 'skipped' ? '・スキップ' : ''}${p.date !== u.date ? `・${md(u.date)}から移動` : ''}</div>` : ''}
           ${unitCheckable(u) ? `<div class="checks">
             ${u.lec ? `<label class="chk"><input type="checkbox" data-ucheck="lecDone"${u.lecDone ? ' checked' : ''}>講義</label>` : ''}
             ${u.exLabel ? `<label class="chk"><input type="checkbox" data-ucheck="exDone"${u.exDone ? ' checked' : ''}>${esc(u.exLabel)}</label>` : ''}</div>` : ''}
@@ -509,7 +615,7 @@
       }
       h += '</div></section>';
     }
-    $('#planDays').innerHTML = h || `<p class="empty">${planFilter === 'today' ? '今日のコマはありません。' : planFilter === 'open' ? '未完了のコマはありません。' : '計画データがまだありません。'}</p>`;
+    $('#planDays').innerHTML = h || `<div class="empty"><span class="mate">${SEA.whale}</span><p>${planFilter === 'today' ? '今日のコマはありません。' : planFilter === 'open' ? '未完了のコマはありません。' : '計画データがまだありません。'}</p></div>`;
 
     const rules = (meta && meta.rules) || [];
     $('#planRules').hidden = !rules.length;
@@ -542,7 +648,7 @@
     const ws = weekStart(weekKey), days = [...Array(7)].map((_, i) => addDays(ws, i)), t = today(), nm = nowMin();
     $('#weekTitle').textContent = `${md(days[0])}〜${md(days[6])}`;
     const inWeek = k => k >= days[0] && k <= days[6];
-    const sPlans = S.plans.filter(p => inWeek(p.date) && p.category === 'study');
+    const sPlans = S.plans.filter(p => inWeek(p.date) && p.category === 'study' && !p.absorbed);
     const sSes = S.sessions.filter(s => inWeek(s.date) && s.category === 'study');
     const planMin = sPlans.reduce((a, p) => a + p.minutes, 0), actMin = sSes.reduce((a, s) => a + sessMin(s), 0);
 
@@ -559,7 +665,7 @@
       if (p.date < t || (p.date === t && p.start + p.minutes < nm)) unstarted++;
     }
     const avg = delays.length ? Math.round(delays.reduce((a, b) => a + b, 0) / delays.length) : null;
-    const wUnits = S.units.filter(u => inWeek(u.date) && unitCheckable(u)), wDone = wUnits.filter(unitDone).length;
+    const wUnits = S.units.filter(u => inWeek(uDate(u)) && unitCheckable(u)), wDone = wUnits.filter(unitDone).length;
     const pct = planMin ? Math.round(100 * actMin / planMin) : 0;
 
     let h = `<div class="wk-tiles">
@@ -572,7 +678,7 @@
 
     const rows = days.map(k => ({
       k,
-      p: S.plans.filter(p => p.date === k && p.category === 'study').reduce((a, p) => a + p.minutes, 0),
+      p: S.plans.filter(p => p.date === k && p.category === 'study' && !p.absorbed).reduce((a, p) => a + p.minutes, 0),
       a: S.sessions.filter(s => s.date === k && s.category === 'study').reduce((a, s) => a + sessMin(s), 0)
     }));
     const mx = Math.max(1, ...rows.map(r => Math.max(r.p, r.a)));
@@ -716,7 +822,7 @@
   $('#todayBtn').onclick = () => { dateKey = today(); renderDay(); };
   $('#tlToggle').onclick = () => { tlFull = !tlFull; renderTimeline(); };
   $('#pickBtn').onclick = openPick;
-  $('#adjustBtn').onclick = () => show('#adjustBack');
+  $('#adjustBtn').onclick = openAdjust;
   $('#reviewBtn').onclick = openReview;
   $('#nowCard').addEventListener('click', e => {
     const b = e.target.closest('[data-act]'); if (!b) return;
@@ -745,7 +851,7 @@
     if (n.replaceSchedule) {
       const cats = notifyCats(), now = Date.now(), items = [];
       for (const p of S.plans) {
-        if (p.status === 'skipped' || !cats.includes(p.category) || sessionsOfPlan(p.id).length) continue;
+        if (p.absorbed || p.status === 'skipped' || !cats.includes(p.category) || sessionsOfPlan(p.id).length) continue;
         const u = p.unitId && unitById(p.unitId);
         if (u && unitDone(u)) continue;
         // 通知時刻 when は「10分後」を押した場合だけ遅れる（予定の開始時刻 start は変えない）
@@ -758,6 +864,18 @@
       const r = runningS();
       try { n.setRunning(r ? JSON.stringify({ sessionId: r.id, planId: r.planId, name: r.name, startedAt: r.startedAt, endAt: plannedEnd(r) }) : ''); } catch (_) { }
     }
+  }
+  /* Androidアプリの上下の帯（ステータスバー・ナビゲーションバーの裏）を、画面の色に合わせる。
+     色は styles.css の --bar-top／--bar-bottom。古いアプリ（setBarColors なし）では何もしない。 */
+  function syncBars() {
+    const n = window.DayFlowNative;
+    if (!n || !n.setBarColors) return;
+    const cs = getComputedStyle(document.documentElement);
+    try { n.setBarColors(cs.getPropertyValue('--bar-top').trim(), cs.getPropertyValue('--bar-bottom').trim()); } catch (_) { }
+  }
+  if (window.matchMedia) {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', syncBars);
   }
   /* 通知のボタン1回分を記録に反映する。at は押された時刻（ミリ秒）。省略時はいま。 */
   async function applyNativeAction(action, id, at) {
@@ -805,7 +923,9 @@
   window.dayFlowDrain = drainNative;     // アプリ側がボタン操作をためた直後に呼ぶ
 
   /* ---------- 起動 ---------- */
+  $$('[data-icon]').forEach(i => { i.innerHTML = SEA.icons[i.dataset.icon] || ''; });
   async function boot() {
+    syncBars();
     await DB.ensureSeed();
     await reload(); renderAll();
     await syncUnits();

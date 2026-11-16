@@ -5,7 +5,9 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -34,6 +36,7 @@ public class MainActivity extends Activity {
     private static WeakReference<MainActivity> current = new WeakReference<>(null);
 
     private WebView web;
+    private FrameLayout root;
     private ValueCallback<Uri[]> fileCallback;
 
     /** 通知のボタンが押されたとき、画面が生きていればすぐ取りに来させる。 */
@@ -46,6 +49,43 @@ public class MainActivity extends Activity {
         if (web != null) web.evaluateJavascript("window.dayFlowDrain&&window.dayFlowDrain()", null);
     }
 
+    /** 画面（Web）から、上下の帯の色を受け取る。色は "#rrggbb"。画面のデザインを変えてもアプリを入れ直さずに済む。 */
+    static void setBarColors(final String top, final String bottom) {
+        final MainActivity a = current.get();
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            try {
+                a.applyBars(Color.parseColor(top), Color.parseColor(bottom));
+            } catch (RuntimeException ignored) {      // 色の書式が違うときは何もしない
+            }
+        });
+    }
+
+    /** 上の帯（ステータスバーの裏）と下の帯（ナビゲーションバーの裏）を塗り、バーの文字の明暗を合わせる。 */
+    private void applyBars(int top, int bottom) {
+        if (root == null) return;
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, top, bottom, bottom});
+        bg.setColors(new int[]{top, top, bottom, bottom}, new float[]{0f, 0.5f, 0.5f, 1f});   // 上半分は上の色、下半分は下の色
+        root.setBackground(bg);
+        boolean lightTop = Color.luminance(top) > 0.5f, lightBottom = Color.luminance(bottom) > 0.5f;
+        if (Build.VERSION.SDK_INT < 35) {             // Android 14 以前はバー自体に色を付ける
+            getWindow().setStatusBarColor(top);
+            getWindow().setNavigationBarColor(bottom);
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                int value = (lightTop ? WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS : 0)
+                        | (lightBottom ? WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS : 0);
+                c.setSystemBarsAppearance(value, mask);   // 明るい背景のときはバーの文字を暗くする
+            }
+        } else {
+            int flags = (lightTop ? View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : 0) | (lightBottom ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0);
+            getWindow().getDecorView().setSystemUiVisibility(flags);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -53,15 +93,19 @@ public class MainActivity extends Activity {
         Notifier.ensureChannels(this);
 
         boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
-        int background = night ? 0xFF12171D : 0xFFF6F7F3;      // styles.css の --paper と同じ色
+        // 画面が読み込まれるまでの色。styles.css の --paper／--bar-top／--bar-bottom と同じ色にしておく。
+        // 読み込み後は画面側が setBarColors で上書きする。
+        int background = night ? 0xFF081C30 : 0xFFE9F6F8;
+        int barTop = night ? 0xFF0E3152 : 0xFF8FDCEC;
+        int barBottom = night ? 0xFF102C47 : 0xFFFFFFFF;
 
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(background);
+        root = new FrameLayout(this);
         web = new WebView(this);
         web.setBackgroundColor(background);
         root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
-        fitSystemBars(root, night);
+        fitSystemBars(root);
+        applyBars(barTop, barBottom);
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -118,7 +162,7 @@ public class MainActivity extends Activity {
     }
 
     /** Android 15 以降は画面がステータスバーの下まで広がるので、その分の余白を取る。 */
-    private void fitSystemBars(View root, boolean night) {
+    private void fitSystemBars(View root) {
         root.setOnApplyWindowInsetsListener((v, insets) -> {
             if (Build.VERSION.SDK_INT >= 30) {
                 Insets i = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
@@ -129,15 +173,6 @@ public class MainActivity extends Activity {
             }
             return insets;
         });
-        if (Build.VERSION.SDK_INT >= 30) {
-            WindowInsetsController c = getWindow().getInsetsController();
-            if (c != null) {
-                int light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-                c.setSystemBarsAppearance(night ? 0 : light, light);   // 明るい背景のときはバーの文字を暗くする
-            }
-        } else if (!night) {
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-        }
     }
 
     @Override

@@ -5,16 +5,18 @@
 
 設計書：<https://claude.ai/artifact/H1h9yxUyuY3gFMKBqnq1Us>（非公開。持ち主のClaudeから読める）
 
-## いまの状態（2026-11-16）
+## いまの状態（2026-11-17）
 
 | 段階 | 内容 | 状態 |
 | --- | --- | --- |
 | 0 | 通知ボタンの判定テストページ（`test.html`） | 実装済み。実機（Galaxy Watch）での判定待ち |
 | 1 | データ層と今日画面 | 実装済み |
 | 2 | 学習コマの取り込みと計画画面 | 実装済み（2026年11月分） |
-| 3 | 本番の通知（予定開始／終了確認） | 方式はB（Androidアプリが通知を出す）。画面側・アプリ側とも実装済み。アプリは未ビルド・実機未確認（`docs/ANDROID_SHELL.md`） |
+| 3 | 本番の通知（予定開始／終了確認） | 方式はB（Androidアプリが通知を出す）。画面側・アプリ側とも実装済み。アプリはビルド済み（リリース `android-latest`）。通知は実機未確認（`docs/ANDROID_SHELL.md`） |
 | 4 | 週次画面 | 実装済み |
 | 5 | 12月の計画データ | 未作成（11月下旬に作る） |
+| 6 | 「この日は無理」（コマを後ろへ送って組み直す） | 実装済み（v2.3.0） |
+| 7 | 海と水族館のデザイン | 実装済み（v2.3.0） |
 
 ## ファイル
 
@@ -23,12 +25,13 @@
 | `index.html` / `styles.css` | 画面の骨組みと見た目 |
 | `js/db.js` | 保存（IndexedDB）とデータ操作。画面と service worker の両方が使う |
 | `js/app.js` | 画面の表示と入力 |
+| `js/sea.js` | 海の生き物のイラストとタブのアイコン（このアプリ用に描いたSVG）。曜日ごとに1匹出る |
 | `sw.js` | オフライン対応、更新の反映、通知ボタンの受け取り |
 | `test.html` | Watchで通知のボタンが押せるかを確かめるページ |
 | `data/index.json` | 取り込む計画データの一覧（月・ファイル・版） |
 | `data/units-YYYY-MM.json` | 月ごとの学習コマ |
 | `tools/make_units_2026_11.py` | 11月分の計画データを作ったスクリプト。翌月分のひな形 |
-| `tools/make_icons.py` | アイコンを描くスクリプト |
+| `tools/make_icons.py` | アイコン（画面用とAndroidアプリ用）を描くスクリプト |
 | `netlify.toml` | Netlifyの公開設定（ビルドなし） |
 | `docs/ANDROID_SHELL.md` | Androidアプリ（殻）の仕様と受け入れ条件 |
 | `android/` | Androidアプリ（殻）のソース。画面をネットから読み、通知を出す |
@@ -44,10 +47,10 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 | --- | --- |
 | `cards` | `id` `name` `category` `minutes` `order` |
 | `units` | `id` `month` `seq` `date` `slot` `subj` `k` `title` `lec` `exLabel` `note` `est` ／ 本人の記録：`lecDone` `exDone` `memo` `manualMin` |
-| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` |
+| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` `absorbed` |
 | `sessions` | `id` `date` `planId` `unitId` `cardId` `name` `category` `startedAt` `endedAt`（計測中は `null`） `startSource` `endSource` `needsCheck` `extendMin` |
 | `reviews` | `date` `study` `exercise` `sleep`（各1〜3） `sleepHours` `note` |
-| `meta` | `key` `value`（`seeded`、`notifyCats`、`lastExport`、`units:YYYY-MM`） |
+| `meta` | `key` `value`（`seeded`、`notifyCats`、`lastExport`、`units:YYYY-MM`、`lastCant`） |
 | `log` | 通知テストの記録 |
 
 決まり：
@@ -59,6 +62,15 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 - スキップは予定の `status` に残し、実績は作らない。
 - 計測したまま予定終了＋30分を過ぎると、アプリを開いたときに終了時刻を確認する。「予定どおり終わったことにする」を選ぶと `endSource: auto`、`needsCheck: true` で閉じ、週次画面に「確認が必要」と出る。
 - 開始の遅れ＝予定と同じ日に始めた最初の実績の `startedAt` − 予定の開始時刻。
+
+「この日は無理」（予定を調整 → この日は無理）の決まり：
+
+- 送るのは学習コマだけ（未完了・実績なし・固定していないもの）。運動などの予定は動かさない。
+- 科目ごとに、講義の順番を保ったまま後ろの枠へ1つずつずらす。途中に予備の空きがあれば先にそこへ入れる。
+- コマの定義（`units` の `date`）は変えず、予定（`plans` の `date`・`start`）だけを動かす。画面はコマの日付を予定の日付で見る。
+- 予備の枠は、入れた分だけ短くする。残りが30分未満になった予備は `absorbed: true` にして、画面にも通知にも出さない。
+- 予備が足りない分は、計画の最終日の翌日以降（20:00）に置き、確認画面で知らせる。
+- 直前の1回は元に戻せる（`meta` の `lastCant` に動かす前の予定を残す）。送ったあとに実績がついたら戻せない。
 
 ## 翌月の計画を入れる手順
 

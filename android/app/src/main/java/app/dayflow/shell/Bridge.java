@@ -71,6 +71,13 @@ final class Bridge {
         }
     }
 
+    /** 上下の帯（ステータスバー・ナビゲーションバーの裏）の色を、画面の色に合わせる。色は "#rrggbb"。 */
+    @JavascriptInterface
+    public void setBarColors(String top, String bottom) {
+        if (top == null || bottom == null) return;
+        MainActivity.setBarColors(top, bottom);
+    }
+
     /** 設定画面に出す状態。 */
     @JavascriptInterface
     public String status() {
