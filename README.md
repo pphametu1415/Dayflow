@@ -17,6 +17,7 @@
 | 5 | 12月の計画データ | 未作成（11月下旬に作る） |
 | 6 | 「この日は無理」（コマを後ろへ送って組み直す） | 実装済み（v2.3.0） |
 | 7 | 海と水族館のデザイン | 実装済み（v2.3.0） |
+| 8 | 「組み直す」（積み残しの精算と前倒し）、海の明るさの切り替え | 実装済み（v2.4.0） |
 
 ## ファイル
 
@@ -25,6 +26,7 @@
 | `index.html` / `styles.css` | 画面の骨組みと見た目 |
 | `js/db.js` | 保存（IndexedDB）とデータ操作。画面と service worker の両方が使う |
 | `js/app.js` | 画面の表示と入力 |
+| `js/theme.js` | 海の明るさ（明るい海・少し潜った海・深い海）を決める。`<head>` で先に読む |
 | `js/sea.js` | 海の生き物のイラストとタブのアイコン（このアプリ用に描いたSVG）。曜日ごとに1匹出る |
 | `sw.js` | オフライン対応、更新の反映、通知ボタンの受け取り |
 | `test.html` | Watchで通知のボタンが押せるかを確かめるページ |
@@ -47,7 +49,7 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 | --- | --- |
 | `cards` | `id` `name` `category` `minutes` `order` |
 | `units` | `id` `month` `seq` `date` `slot` `subj` `k` `title` `lec` `exLabel` `note` `est` ／ 本人の記録：`lecDone` `exDone` `memo` `manualMin` |
-| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` `absorbed` |
+| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` `absorbed` `early` |
 | `sessions` | `id` `date` `planId` `unitId` `cardId` `name` `category` `startedAt` `endedAt`（計測中は `null`） `startSource` `endSource` `needsCheck` `extendMin` |
 | `reviews` | `date` `study` `exercise` `sleep`（各1〜3） `sleepHours` `note` |
 | `meta` | `key` `value`（`seeded`、`notifyCats`、`lastExport`、`units:YYYY-MM`、`lastCant`） |
@@ -71,6 +73,20 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 - 予備の枠は、入れた分だけ短くする。残りが30分未満になった予備は `absorbed: true` にして、画面にも通知にも出さない。
 - 予備が足りない分は、計画の最終日の翌日以降（20:00）に置き、確認画面で知らせる。
 - 直前の1回は元に戻せる（`meta` の `lastCant` に動かす前の予定を残す）。送ったあとに実績がついたら戻せない。
+
+「組み直す」（計画画面の積み残しの帯のボタン）の決まり：
+
+- 「この日は無理」と同じ考え方で、計画全体をいまの進み具合に合わせる。学習コマだけ・科目ごと・講義の順番は変えない。
+- 遅れているとき：過ぎた日の未完了コマを、これからの枠へ順番どおりに入れ直す。足りない分は予備の枠、それでも足りなければ計画の外。
+- 進んでいるとき：先に終えたコマの枠が空くので、続きのコマを1つずつ前へ詰める（ボタンは「前に詰める」）。予備の枠は使わない。
+- 先に終えたコマの予定は、計測していれば実際にやった日時へ合わせる。計測していなければ `early: true` にしてタイムラインから隠す。
+- やりかけ（実績がついた）コマと、固定した予定は動かさない。直前の1回は元に戻せる（`lastCant` を共用）。
+
+海の明るさ（設定画面）：
+
+- 「端末に合わせる」「明るい海」「深い海」「進み具合で変わる」から選ぶ。端末ごとに `localStorage`（`df-sea`）に保存する。
+- 「進み具合で変わる」：積み残しなし＝明るい海、積み残しあり＝少し潜った海、積み残しが上限（`backlogLimit`）を超えた・計画の期間からはみ出したコマがある＝深い海。
+- 色は `styles.css` の `:root`（明るい海）、`:root[data-sea="mid"]`、`:root[data-sea="deep"]`。
 
 ## 翌月の計画を入れる手順
 

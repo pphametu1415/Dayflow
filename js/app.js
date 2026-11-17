@@ -1,8 +1,8 @@
 /* DayFlow v2 — 画面。データ操作は js/db.js（DFDB）に置き、ここは表示と入力だけを受け持つ。 */
 (() => {
   'use strict';
-  const DB = window.DFDB, SEA = window.DFSea;
-  const APP_VERSION = '2.3.0';
+  const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
+  const APP_VERSION = '2.4.0';
   const START = 6 * 60, END = 24 * 60, HOURPX = 64, PPM = HOURPX / 60;
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -37,8 +37,9 @@
   const weekStart = k => { const d = DB.keyToDate(k); return addDays(k, -((d.getDay() + 6) % 7)); };
   const sessMin = s => Math.max(1, Math.round(((s.endedAt == null ? Date.now() : s.endedAt) - s.startedAt) / 60000));
 
-  /* absorbed：予備の枠をほぼ使い切った予定（「この日は無理」で中身を入れた残りが30分未満）。画面にも通知にも出さない。 */
-  const plansOf = k => S.plans.filter(p => p.date === k && !p.absorbed).sort((a, b) => a.start - b.start);
+  /* absorbed：予備の枠をほぼ使い切った予定（コマを入れた残りが30分未満）。画面にも通知にも出さない。
+     early：計測せずに先に終えたコマの予定（組み直しで元の枠を次のコマに譲ったもの）。タイムラインには出さない。 */
+  const plansOf = k => S.plans.filter(p => p.date === k && !p.absorbed && !p.early).sort((a, b) => a.start - b.start);
   const sessionsOf = k => S.sessions.filter(s => s.date === k).sort((a, b) => a.startedAt - b.startedAt);
   const sessionsOfPlan = id => S.sessions.filter(s => s.planId === id);
   const runningS = () => S.sessions.find(s => s.endedAt == null) || null;
@@ -82,7 +83,20 @@
     S = { cards, units, plans, sessions, reviews, meta: Object.fromEntries(meta.map(m => [m.key, m.value])) };
   }
   async function commit() { await reload(); renderAll(); syncNative(); }
+  /* 進み具合 → 海の明るさ。積み残しなし＝明るい海、積み残しあり＝少し潜った海、
+     積み残しが上限を超えた・計画の期間からはみ出したコマがある＝深い海。 */
+  function progress() {
+    const t = today(), metas = monthMetas(), meta = metas[metas.length - 1];
+    const limit = (meta && meta.backlogLimit) || 4;
+    const open = S.units.filter(u => unitCheckable(u) && !unitDone(u) && !(unitPlan(u) || {}).absorbed);
+    const planEnd = S.units.reduce((m, u) => (u.date > m ? u.date : m), '');
+    const backlog = open.filter(u => uDate(u) < t).length;
+    const outside = planEnd ? open.filter(u => uDate(u) > planEnd).length : 0;
+    const level = (outside > 0 || backlog > limit) ? 'deep' : backlog > 0 ? 'mid' : 'light';
+    return { backlog, outside, limit, level };
+  }
   function renderAll() {
+    if (THEME) THEME.setLevel(progress().level);
     if (view === 'day') renderDay();
     else if (view === 'plan') renderPlan();
     else if (view === 'week') renderWeek();
@@ -498,9 +512,117 @@
     if (plan.overflow.length) $('#cantWarn').textContent = `予備が足りないため、${plan.overflow.length}コマは計画の最終日より後（${md(plan.overflow[0].to.date)}以降）に入ります。翌月の計画と重なる場合があります。`;
     $('#cantList').innerHTML = plan.moves.map(m =>
       `<li><b>${esc(m.plan.name)}</b><span>${day(m.plan.date)}${hm(m.plan.start)} → ${day(m.to.date)}${hm(m.to.start)}${m.via === 'buffer' ? '・予備の枠' : m.via === 'overflow' ? '・計画の外' : ''}</span></li>`).join('');
+    $('#cantYes').textContent = '後ろへ送る';
     hide('#adjustBack'); show('#cantBack');
   }
   $('#cantBtn').onclick = openCant;
+
+  /* ---------- 進み具合に合わせて組み直す（計画画面のボタン）----------
+     遅れているとき：過ぎた日の未完了コマ（積み残し）を、これからの枠へ順番どおりに入れ直す。
+                     枠が足りない分は予備の枠を使い、それでも足りなければ計画の外に置いて知らせる。
+     進んでいるとき：先に終えたコマの枠が空くので、続きのコマを1つずつ前へ詰める。予備の枠は使わない。
+     決まりは「この日は無理」と同じ（学習コマだけ・科目ごと・講義の順番は変えない・直前の1回は元に戻せる）。
+     やりかけ（実績がついた）コマと、固定した予定は動かさない。 */
+  function planFlow() {
+    const t = today(), nm = nowMin();
+    const usable = p => p.date > t || (p.date === t && p.start + p.minutes > nm);   // まだ使える枠（今日の分は終了時刻が先なら可）
+    const ahead = p => p.date > t || (p.date === t && p.start > nm);                 // これから始まる枠
+    const cmp = (a, b) => (a.date === b.date ? a.start - b.start : (a.date < b.date ? -1 : 1));
+    const after = (a, c) => a.date > c.date || (a.date === c.date && a.start >= c.start + c.minutes);
+    const all = S.units.filter(u => u.k !== 'y' && unitCheckable(u)).map(u => ({ u, p: unitPlan(u) }))
+      .filter(x => x.p && !x.p.absorbed && !x.p.early && !x.p.fixed);
+    const buffers = S.units.filter(u => u.k === 'y').map(unitPlan)
+      .filter(p => p && !p.absorbed && !p.fixed && p.status !== 'skipped' && ahead(p) && !sessionsOfPlan(p.id).length)
+      .map(p => ({ id: p.id, date: p.date, start: p.start, minutes: p.minutes, changed: false })).sort(cmp);
+    let overflowDate = S.units.reduce((m, u) => { const d = uDate(u); return d > m ? d : m; }, t);
+    const moves = [], relocate = [];
+    let freed = 0;
+    for (const k of [...new Set(all.map(x => x.u.k))]) {
+      const chain = all.filter(x => x.u.k === k)
+        .sort((a, b) => String(a.u.month || '').localeCompare(String(b.u.month || '')) || (a.u.seq || 0) - (b.u.seq || 0));
+      // 先に終えたコマ：これからの枠に残っている予定は、枠を空ける
+      const early = chain.filter(x => unitDone(x.u) && ahead(x.p));
+      const movers = chain.filter(x => !unitDone(x.u) && !sessionsOfPlan(x.p.id).length && !(x.p.status === 'skipped' && usable(x.p)));
+      if (!early.length && !movers.some(x => !usable(x.p))) continue;
+      for (const x of early) {
+        const ss = sessionsOfPlan(x.p.id).sort((a, b) => a.startedAt - b.startedAt);
+        if (ss.length) {            // 計測していたら、実際にやった日時へ予定を合わせる
+          const d = new Date(ss[0].startedAt), st = clamp(d.getHours() * 60 + d.getMinutes(), 0, END - x.p.minutes);
+          relocate.push({ plan: x.p, to: { date: ss[0].date, start: st }, early: false });
+        } else relocate.push({ plan: x.p, to: { date: t, start: x.p.start }, early: true });
+      }
+      const pos = [
+        ...movers.filter(x => usable(x.p)).map(x => ({ date: x.p.date, start: x.p.start, owner: x.u.id })),
+        ...early.map(x => ({ date: x.p.date, start: x.p.start, owner: null }))
+      ].sort(cmp);
+      let pi = 0, cur = { date: t, start: nm, minutes: 0 };
+      movers.forEach((x, i) => {
+        const next = pos[pi], short = movers.length - i > pos.length - pi;
+        if (next && next.owner === x.u.id) { pi++; cur = { date: next.date, start: next.start, minutes: x.p.minutes }; return; }   // 自分の枠のまま
+        const buf = short ? buffers.find(b => b.minutes >= x.p.minutes && after(b, cur) && (!next || cmp(b, next) < 0)) : null;
+        let to, via = 'slot';
+        if (buf) { to = { date: buf.date, start: buf.start }; buf.start += x.p.minutes; buf.minutes -= x.p.minutes; buf.changed = true; via = 'buffer'; }
+        else if (next) { to = { date: next.date, start: next.start }; pi++; }
+        else { overflowDate = addDays(overflowDate > cur.date ? overflowDate : cur.date, 1); to = { date: overflowDate, start: 20 * 60 }; via = 'overflow'; }
+        cur = { date: to.date, start: to.start, minutes: x.p.minutes };
+        moves.push({ plan: x.p, to, via, displaced: !usable(x.p), earlier: cmp(to, x.p) < 0 });
+      });
+      freed += pos.length - pi;
+    }
+    // コマの長さが枠の持ち主と違っても重ならないよう、同じ日の中で後ろへ寄せる
+    const dest = new Map(moves.map(m => [m.plan.id, m]));
+    const gone = new Set(relocate.map(r => r.plan.id));
+    const used = new Map(buffers.filter(b => b.changed).map(b => [b.id, b]));      // 使った予備は、縮めたあとの時刻で見る
+    for (const d of [...new Set(moves.map(m => m.to.date))]) {
+      const day = S.plans.filter(p => p.category === 'study' && !p.absorbed && !p.early && !gone.has(p.id) && p.status !== 'skipped'
+        && !(used.has(p.id) && used.get(p.id).minutes < 30)
+        && (dest.has(p.id) ? dest.get(p.id).to.date === d : p.date === d))
+        .map(p => {
+          const m = dest.get(p.id), b = used.get(p.id);
+          return { m, start: m ? m.to.start : b ? b.start : p.start, minutes: b ? b.minutes : p.minutes };
+        })
+        .sort((a, b) => a.start - b.start || (a.m ? 1 : -1));
+      let end = 0;
+      for (const x of day) {
+        if (x.m && x.start < end) { x.start = Math.min(end, END - x.minutes); x.m.to.start = x.start; }
+        end = Math.max(end, x.start + x.minutes);
+      }
+    }
+    moves.sort((a, b) => cmp(a.to, b.to));
+    return {
+      kind: 'flow', date: t, moves, relocate, buffers: buffers.filter(b => b.changed), freed,
+      displaced: moves.filter(m => m.displaced).length, shifted: moves.filter(m => !m.displaced && !m.earlier).length,
+      pulled: moves.filter(m => m.earlier).length, overflow: moves.filter(m => m.via === 'overflow')
+    };
+  }
+  function openFlow() {
+    const plan = planFlow();
+    if (!plan.moves.length) { toast('組み直すコマがありません'); return; }
+    cantPlan = plan;
+    const day = k => `${md(k)}（${wdOf(k)}）`;
+    $('#cantTitle').textContent = '進み具合に合わせて組み直す';
+    $('#cantSummary').textContent =
+      (plan.displaced ? `積み残しの${plan.displaced}コマを、これからの枠へ入れ直します。` : '')
+      + (plan.shifted ? `続きの${plan.shifted}コマは、順番どおりに1つずつ後ろへずれます。` : '')
+      + (plan.pulled ? `先に終えたコマの分、${plan.pulled}コマを前へ詰めます。` : '')
+      + (plan.buffers.length ? `予備の枠を${plan.buffers.length}つ使います。` : '')
+      + (plan.freed ? `いちばん後ろに${plan.freed}コマ分の空きができます。` : '');
+    $('#cantWarn').hidden = !plan.overflow.length;
+    if (plan.overflow.length) $('#cantWarn').textContent = `予備が足りないため、${plan.overflow.length}コマは計画の最終日より後（${md(plan.overflow[0].to.date)}以降）に入ります。翌月の計画と重なる場合があります。`;
+    $('#cantList').innerHTML = plan.moves.map(m =>
+      `<li><b>${esc(m.plan.name)}</b><span>${day(m.plan.date)}${hm(m.plan.start)} → ${day(m.to.date)}${hm(m.to.start)}${m.via === 'buffer' ? '・予備の枠' : m.via === 'overflow' ? '・計画の外' : m.earlier ? '・前倒し' : ''}</span></li>`).join('');
+    $('#cantYes').textContent = '組み直す';
+    show('#cantBack');
+  }
+  async function undoLast() {
+    const last = S.meta.lastCant;
+    if (!last || !Array.isArray(last.plans)) return;
+    const moved = new Set(last.moved || last.plans.map(o => o.id));
+    if (last.plans.some(o => moved.has(o.id) && sessionsOfPlan(o.id).length > (o.sessionCount || 0))) { toast('組み直したあとに実績がついたコマがあるため、戻せません'); return; }
+    await DB.putMany('plans', last.plans.map(({ sessionCount, ...o }) => o));
+    await DB.setMeta('lastCant', null);
+    hide('#adjustBack'); await commit(); toast(last.kind === 'flow' ? '組み直す前の予定に戻しました' : '送る前の予定に戻しました');
+  }
   $('#cantNo').onclick = () => { cantPlan = null; hide('#cantBack'); };
   $('#cantYes').onclick = async () => {
     const plan = cantPlan; if (!plan) return;
@@ -515,22 +637,20 @@
       before.push({ ...p });
       next.push({ ...p, start: b.start, minutes: b.minutes, absorbed: b.minutes < 30, notifyAt: null, userEdited: true });
     }
+    for (const r of plan.relocate || []) {       // 先に終えたコマの予定（組み直しのときだけ）
+      before.push({ ...r.plan, sessionCount: sessionsOfPlan(r.plan.id).length });
+      next.push({ ...r.plan, date: r.to.date, start: r.to.start, early: r.early, notifyAt: null, userEdited: true });
+    }
     await DB.putMany('plans', next);
-    await DB.setMeta('lastCant', { at: Date.now(), date: plan.date, plans: before });
+    await DB.setMeta('lastCant', { at: Date.now(), date: plan.date, kind: plan.kind || 'cant', plans: before, moved: plan.moves.map(m => m.plan.id) });
     hide('#cantBack'); await commit(); toast(`${plan.moves.length}コマを組み直しました`);
   };
-  $('#undoCant').onclick = async () => {
-    const last = S.meta.lastCant;
-    if (!last || !Array.isArray(last.plans)) return;
-    if (last.plans.some(o => sessionsOfPlan(o.id).length)) { toast('送ったあとに実績がついたコマがあるため、戻せません'); return; }
-    await DB.putMany('plans', last.plans);
-    await DB.setMeta('lastCant', null);
-    hide('#adjustBack'); await commit(); toast('送る前の予定に戻しました');
-  };
+  $('#undoCant').onclick = undoLast;
+  const undoLabel = last => (last.kind === 'flow' ? '組み直しを元に戻す' : `送ったコマを元に戻す（${md(last.date)}の分）`);
   function openAdjust() {
     const last = S.meta.lastCant, b = $('#undoCant');
     b.hidden = !last;
-    if (last) b.textContent = `送ったコマを元に戻す（${md(last.date)}の分）`;
+    if (last) b.textContent = undoLabel(last);
     show('#adjustBack');
   }
 
@@ -582,9 +702,13 @@
 
     const backlog = units.filter(u => uDate(u) < t && unitCheckable(u) && !unitDone(u)).length;
     const limit = (meta && meta.backlogLimit) || 4;
-    $('#backlog').innerHTML = backlog > limit
-      ? `<p class="notice warn">積み残しが${backlog}コマあります。新しい講義を止めて、回収を優先してください。</p>`
-      : backlog > 0 ? `<p class="notice">積み残し ${backlog}コマ（${limit}コマを超えたら回収を優先）</p>` : '';
+    const flow = planFlow(), last = S.meta.lastCant;
+    const flowBtn = flow.moves.length ? `<button class="btn primary" id="flowBtn">${flow.displaced ? '組み直す' : '前に詰める'}</button>` : '';
+    const undoBtn = last ? `<button class="btn ghost" id="flowUndo">${undoLabel(last)}</button>` : '';
+    const text = backlog > limit ? `積み残しが${backlog}コマあります。新しい講義を止めて、回収を優先してください。`
+      : backlog > 0 ? `積み残し ${backlog}コマ（${limit}コマを超えたら回収を優先）`
+        : (flow.pulled ? `先に終えたコマがあります。続きの${flow.pulled}コマを前へ詰められます。` : (last ? '予定を組み直しました。' : ''));
+    $('#backlog').innerHTML = text ? `<div class="notice flowbar${backlog > limit ? ' warn' : ''}"><span>${text}</span>${flowBtn}${undoBtn}</div>` : '';
 
     $$('#planTabs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.f === planFilter ? 'true' : 'false'));
     const shown = units.filter(u => planFilter === 'today' ? uDate(u) === t : planFilter === 'open' ? (unitCheckable(u) && !unitDone(u)) : true);
@@ -621,6 +745,10 @@
     $('#planRules').hidden = !rules.length;
     $('#planRules').innerHTML = `<summary>運用ルール</summary><ul>${rules.map(r => `<li>${esc(r)}</li>`).join('')}</ul>`;
   }
+  $('#backlog').addEventListener('click', e => {
+    if (e.target.id === 'flowBtn') openFlow();
+    else if (e.target.id === 'flowUndo') undoLast();
+  });
   $('#planTabs').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; planFilter = b.dataset.f; renderPlan(); });
   $('#planDays').addEventListener('toggle', e => {
     const d = e.target.closest('[data-memo]'); if (!d) return;
@@ -714,6 +842,17 @@
   $('#nextWeek').onclick = () => { weekKey = addDays(weekKey, 7); renderWeek(); };
 
   /* ---------- 設定 ---------- */
+  const SEA_MODES = [['auto', '端末に合わせる'], ['light', '明るい海'], ['deep', '深い海'], ['progress', '進み具合で変わる']];
+  const SEA_NAMES = { light: '明るい海', mid: '少し潜った海', deep: '深い海' };
+  function seaNote() {
+    if (!THEME) return '';
+    const m = THEME.mode();
+    if (m === 'auto') return 'スマホの「明るい表示／暗い表示」に合わせます。';
+    if (m !== 'progress') return `いつも${SEA_NAMES[m]}で表示します。`;
+    const g = progress();
+    const why = g.outside ? `計画の期間からはみ出したコマが${g.outside}つ` : g.backlog ? `積み残し${g.backlog}コマ` : '積み残しなし';
+    return `いまは「${SEA_NAMES[g.level]}」（${why}）。積み残しがなければ明るい海、あると少し潜り、${g.limit}コマを超えるか計画からはみ出すと深い海になります。`;
+  }
   function renderSettings() {
     const last = S.meta.lastExport, cats = notifyCats(), metas = monthMetas();
     const native = !!(window.DayFlowNative && window.DayFlowNative.replaceSchedule);
@@ -733,6 +872,12 @@
         <p class="sub">Androidアプリとの連携：${nativeLine}</p>
       </div>
 
+      <h2 class="sec">海の明るさ</h2>
+      <div class="box">
+        <div class="choices" role="group" aria-label="海の明るさ">${SEA_MODES.map(([m, label]) => `<button data-sea-mode="${m}" aria-pressed="${THEME && THEME.mode() === m ? 'true' : 'false'}">${label}</button>`).join('')}</div>
+        <p class="sub">${seaNote()}</p>
+      </div>
+
       <h2 class="sec">バックアップ</h2>
       <div class="box">
         <p class="sub">最後の書き出し：${last ? new Date(last).toLocaleString('ja-JP') : 'まだありません'}。記録はこの端末の中だけにあるので、週に1回は書き出してください。</p>
@@ -748,6 +893,8 @@
     if (e.target.id === 'addCard') { openCard(null); return; }
     if (e.target.id === 'exportBtn') { await doExport(); return; }
     if (e.target.id === 'importBtn') { $('#importFile').value = ''; $('#importFile').click(); }
+    const sm = e.target.closest('[data-sea-mode]');
+    if (sm && THEME) { THEME.setMode(sm.dataset.seaMode); THEME.setLevel(progress().level); syncBars(); renderSettings(); }
   });
   $('#settingsBody').addEventListener('change', async e => {
     if (!e.target.dataset.ncat) return;
@@ -873,10 +1020,7 @@
     const cs = getComputedStyle(document.documentElement);
     try { n.setBarColors(cs.getPropertyValue('--bar-top').trim(), cs.getPropertyValue('--bar-bottom').trim()); } catch (_) { }
   }
-  if (window.matchMedia) {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    if (mq.addEventListener) mq.addEventListener('change', syncBars);
-  }
+  if (THEME) THEME.onChange(syncBars);
   /* 通知のボタン1回分を記録に反映する。at は押された時刻（ミリ秒）。省略時はいま。 */
   async function applyNativeAction(action, id, at) {
     at = Number(at) || Date.now();
