@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
-  const APP_VERSION = '2.5.0';
+  const APP_VERSION = '2.5.1';
   const START = 6 * 60, END = 24 * 60 + DB.DAY_SHIFT_MIN, HOURPX = 64, PPM = HOURPX / 60;   // タイムラインは 6:00〜翌3:00
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -282,7 +282,7 @@
   }
 
   /* ---------- 予定シート ---------- */
-  function cardOptions() { return S.cards.map(c => `<option value="${c.id}">${esc(c.name)}（${c.minutes}分）</option>`).join(''); }
+  function cardOptions() { return S.cards.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join(''); }   // 長さは「予定時間」の欄で決める
   function openPlan(id, min) {
     editPlanId = id; newPlanMin = min;
     const p = id ? planById(id) : null;
@@ -304,6 +304,10 @@
     $('#planStartNow').hidden = !p || !!runningS();
     show('#planBack');
   }
+  /* カードの予定を保存したら、その長さを次回の初期値（カードの標準の長さ）として覚える。講義コマの予定は対象外。 */
+  async function learnMinutes(c, minutes) {
+    if (c.minutes !== minutes) await DB.put('cards', { ...c, minutes });
+  }
   $('#planCard').addEventListener('change', () => {
     if (editPlanId) return;
     const c = cardById($('#planCard').value); if (c) $('#planMinutes').value = c.minutes;
@@ -317,11 +321,12 @@
       const p = planById(editPlanId); if (!p) return;
       const next = { ...p, start, minutes, fixed, userEdited: true };
       if (start !== p.start) next.notifyAt = null;
-      if (!p.unitId) { const c = cardById($('#planCard').value); if (c) Object.assign(next, { cardId: c.id, name: c.name, category: c.category }); }
+      if (!p.unitId) { const c = cardById($('#planCard').value); if (c) { Object.assign(next, { cardId: c.id, name: c.name, category: c.category }); await learnMinutes(c, minutes); } }
       await DB.put('plans', next);
     } else {
       const c = cardById($('#planCard').value); if (!c) return;
       await DB.put('plans', { id: DB.uid('p'), date: dateKey, start, minutes, cardId: c.id, name: c.name, category: c.category, unitId: null, fixed, status: 'active', notifyAt: null, userEdited: true });
+      await learnMinutes(c, minutes);
     }
     hide('#planBack'); await commit(); toast(editPlanId ? '予定を更新しました' : '予定を追加しました');
   });
