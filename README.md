@@ -35,7 +35,6 @@
 | `tools/make_units_2026_11.py` | 11月分の計画データを作ったスクリプト。翌月分のひな形 |
 | `tools/make_icons.py` | アイコン（画面用とAndroidアプリ用）を描くスクリプト |
 | `.nojekyll` | GitHub Pages に「加工せず、そのまま公開する」と伝える空のファイル |
-| `netlify.toml` | 以前の公開先（Netlify）の設定。GitHub Pages への引っ越しを確認したら消す |
 | `docs/ANDROID_SHELL.md` | Androidアプリ（殻）の仕様と受け入れ条件 |
 | `android/` | Androidアプリ（殻）のソース。画面をネットから読み、通知を出す |
 | `.github/workflows/android.yml` | APKを自動でビルドしてリリースに載せる |
