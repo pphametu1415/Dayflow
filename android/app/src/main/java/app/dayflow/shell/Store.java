@@ -16,6 +16,7 @@ import java.util.List;
  *  - running ：計測中の実績（終了確認の通知を張り直すため）
  *  - pending ：通知のボタンが押された記録。画面が取りに来るまでためる
  *  - alarmIds：いま予約している開始通知の予定ID（取り消すため）
+ *  - diag.*  ：診断用の記録（予定表を受け取った時刻、次の通知、最後に通知を出した時刻）
  */
 final class Store {
     private static final String PREFS = "dayflow";
@@ -55,6 +56,22 @@ final class Store {
 
     static synchronized void setAlarmIds(Context c, List<String> ids) {
         prefs(c).edit().putString("alarmIds", new JSONArray(ids).toString()).commit();
+    }
+
+    static synchronized long getLong(Context c, String key) {
+        return prefs(c).getLong("diag." + key, 0L);
+    }
+
+    static synchronized String getString(Context c, String key) {
+        return prefs(c).getString("diag." + key, "");
+    }
+
+    static synchronized void putDiag(Context c, String key, long value) {
+        prefs(c).edit().putLong("diag." + key, value).apply();
+    }
+
+    static synchronized void putDiagPair(Context c, String key, long value, String textKey, String text) {
+        prefs(c).edit().putLong("diag." + key, value).putString("diag." + textKey, text == null ? "" : text).apply();
     }
 
     /** ボタンが押された時刻（at）つきで1件ためる。 */

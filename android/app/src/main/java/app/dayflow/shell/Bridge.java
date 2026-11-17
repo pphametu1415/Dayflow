@@ -1,11 +1,17 @@
 package app.dayflow.shell;
 
 import android.content.ContentResolver;
+import android.app.ActivityManager;
+import android.app.usage.UsageStatsManager;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Environment;
+import android.os.PowerManager;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 
 import org.json.JSONException;
@@ -25,13 +31,99 @@ final class Bridge {
         app = c.getApplicationContext();
     }
 
-    /** 開始の通知の予定表。呼ばれるたびに全部置き換える。 */
+    /**
+     * 開始の通知の予定表。呼ばれるたびに全部置き換え、予約も毎回張り直す。
+     * （内容が同じでも張り直す。スマホ側の電池の節約などで予約が消えていても、画面を開けば戻るように）
+     */
     @JavascriptInterface
     public void replaceSchedule(String json) {
         String next = json == null ? "[]" : json;
-        if (next.equals(Store.getSchedule(app))) return;      // 変わっていなければ予約はそのまま
         Store.setSchedule(app, next);
         Scheduler.applySchedule(app);
+        int count = 0;
+        try {
+            count = new org.json.JSONArray(next).length();
+        } catch (JSONException ignored) {
+        }
+        Store.putDiagPair(app, "scheduleAt", System.currentTimeMillis(), "scheduleCount", Integer.toString(count));
+    }
+
+    /** テスト通知。delaySec 秒後（0ならすぐ）に、予定の通知と同じ仕組み（アラーム）で出す。 */
+    @JavascriptInterface
+    public void testNotify(int delaySec) {
+        long at = System.currentTimeMillis() + Math.max(0, delaySec) * 1000L;
+        if (delaySec <= 0) {
+            Notifier.showTest(app, 0);
+            Store.putDiagPair(app, "testFiredAt", System.currentTimeMillis(), "testLateMs", "0");
+        } else {
+            Scheduler.scheduleTest(app, at);
+        }
+        Store.putDiag(app, "testRequestedAt", System.currentTimeMillis());
+        Store.putDiag(app, "testDueAt", at);
+    }
+
+    /** スマホの設定画面を開く。which：notifications（通知）／battery（電池の最適化）／app（アプリ情報） */
+    @JavascriptInterface
+    public boolean openSettings(String which) {
+        String pkg = app.getPackageName();
+        Intent i;
+        if ("notifications".equals(which)) {
+            i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, pkg);
+        } else if ("battery".equals(which)) {
+            i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + pkg));
+        } else if ("alarms".equals(which) && Build.VERSION.SDK_INT >= 31) {
+            i = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:" + pkg));
+        } else {
+            i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg));
+        }
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            app.startActivity(i);
+            return true;
+        } catch (Exception e) {
+            try {           // 開けなければアプリ情報の画面にする
+                app.startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                return true;
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+    }
+
+    /** 通知の診断（設定画面に出す）。 */
+    @JavascriptInterface
+    public String diagnose() {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("version", BuildConfig.VERSION_NAME);
+            o.put("sdk", Build.VERSION.SDK_INT);
+            o.put("maker", Build.MANUFACTURER);
+            o.put("model", Build.MODEL);
+            o.put("notifications", Notifier.enabled(app));
+            o.put("channelStart", Notifier.channelImportance(app, Notifier.CH_START));
+            o.put("exactAlarms", Scheduler.canExact(app));
+            PowerManager pm = (PowerManager) app.getSystemService(Context.POWER_SERVICE);
+            o.put("batteryExempt", pm != null && pm.isIgnoringBatteryOptimizations(app.getPackageName()));
+            ActivityManager am = (ActivityManager) app.getSystemService(Context.ACTIVITY_SERVICE);
+            o.put("bgRestricted", am != null && am.isBackgroundRestricted());
+            UsageStatsManager us = (UsageStatsManager) app.getSystemService(Context.USAGE_STATS_SERVICE);
+            o.put("bucket", us == null ? 0 : us.getAppStandbyBucket());
+            o.put("alarms", Store.getAlarmIds(app).size());
+            o.put("nextAt", Store.getLong(app, "nextAt"));
+            o.put("nextName", Store.getString(app, "nextName"));
+            o.put("scheduleAt", Store.getLong(app, "scheduleAt"));
+            o.put("scheduleCount", Store.getString(app, "scheduleCount"));
+            o.put("lastFiredAt", Store.getLong(app, "lastFiredAt"));
+            o.put("lastFiredName", Store.getString(app, "lastFiredName"));
+            o.put("testRequestedAt", Store.getLong(app, "testRequestedAt"));
+            o.put("testDueAt", Store.getLong(app, "testDueAt"));
+            o.put("testFiredAt", Store.getLong(app, "testFiredAt"));
+            o.put("testAckAt", Store.getLong(app, "testAckAt"));
+            return o.toString();
+        } catch (JSONException e) {
+            return "{}";
+        }
     }
 
     /** 計測中の実績。空文字なら「計測していない」。 */

@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
-  const APP_VERSION = '2.4.0';
+  const APP_VERSION = '2.4.1';
   const START = 6 * 60, END = 24 * 60, HOURPX = 64, PPM = HOURPX / 60;
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -842,6 +842,52 @@
   $('#nextWeek').onclick = () => { weekKey = addDays(weekKey, 7); renderWeek(); };
 
   /* ---------- 設定 ---------- */
+  /* ---------- 通知の診断（Androidアプリ 2.0.4 以降）----------
+     通知が来ないときに、どこで止まっているかを画面で見られるようにする。 */
+  const BUCKETS = { 5: '除外', 10: '使用中', 20: 'よく使う', 30: 'ときどき', 40: 'まれ', 45: '制限', 50: '使わない' };
+  const when = t => {
+    if (!t) return 'まだありません';
+    const d = new Date(t), k = DB.dateKey(d);
+    return `${k === today() ? '今日' : md(k)} ${hm(d.getHours() * 60 + d.getMinutes())}`;
+  };
+  function diagBox() {
+    const n = window.DayFlowNative;
+    if (!n) return '';
+    if (!n.diagnose) return `<h2 class="sec">通知の診断</h2><div class="box"><p class="sub">いまのAndroidアプリには診断の機能がありません。新しい dayflow.apk を入れ直すと使えます。</p></div>`;
+    let d = {};
+    try { d = JSON.parse(n.diagnose() || '{}'); } catch (_) { d = {}; }
+    const ok = (good, text, bad) => `<li class="${good ? 'ok' : 'ng'}"><span>${good ? '○' : '×'}</span>${good ? text : `<b>${bad}</b>`}</li>`;
+    const ch = d.channelStart;
+    const rows = [
+      ok(d.notifications, '通知：許可済み', '通知：未許可。下の「通知の設定」でオンにしてください'),
+      ok(ch === undefined || ch >= 3, '開始の通知：オン', ch === 0 ? '開始の通知：オフになっています。「通知の設定」でオンにしてください' : '開始の通知：音やポップアップが出ない設定です。「通知の設定」で重要度を上げてください'),
+      ok(d.exactAlarms, '時刻どおりの通知：可', '時刻どおりの通知：不可（数分〜大きく遅れます）。「アラームの許可」をオンにしてください'),
+      ok(d.batteryExempt, '電池の最適化：対象外', '電池の最適化：対象（予約が止められることがあります）。「電池の最適化を外す」を押してください'),
+      ok(!d.bgRestricted, 'バックグラウンド：制限なし', 'バックグラウンド：制限されています。「アプリ情報」の電池の項目で制限を外してください'),
+      ok(d.alarms > 0, `予約中の通知：${d.alarms}件（次：${d.nextAt ? `${when(d.nextAt)} ${esc(d.nextName || '')}` : 'なし'}）`, '予約中の通知：0件（予定が通知に渡っていません）')
+    ];
+    const test = d.testRequestedAt
+      ? (d.testFiredAt >= d.testRequestedAt
+        ? `最後のテスト：${when(d.testRequestedAt)}に予約 → ${when(d.testFiredAt)}に通知${d.testAckAt >= d.testFiredAt ? ' → ［受け取った］が押された' : ''}`
+        : (Date.now() > d.testDueAt + 60000 ? `<b style="color:var(--shu)">最後のテスト：${when(d.testDueAt)}の予定が、まだ通知されていません</b>` : `テスト通知を待っています（${when(d.testDueAt)}の予定）`))
+      : 'テストはまだしていません';
+    return `
+      <h2 class="sec">通知の診断</h2>
+      <div class="box">
+        <ul class="diag">${rows.join('')}</ul>
+        <p class="sub">予定表を受け取った時刻：${when(d.scheduleAt)}${d.scheduleCount !== undefined && d.scheduleCount !== '' ? `（${esc(String(d.scheduleCount))}件）` : ''}<br>最後に予定の通知を出した時刻：${when(d.lastFiredAt)}${d.lastFiredName ? ` ${esc(d.lastFiredName)}` : ''}<br>${test}</p>
+        <div class="choices">
+          <button data-test="10">10秒後にテスト</button>
+          <button data-test="300">5分後にテスト</button>
+          <button data-open="notifications">通知の設定</button>
+          <button data-open="battery">電池の最適化を外す</button>
+          <button data-open="alarms">アラームの許可</button>
+          <button data-open="app">アプリ情報</button>
+        </div>
+        <p class="sub">テストは、押したらすぐスマホの画面を消して待ってください。5分後のほうが、実際の予定の通知に近い条件です。<br>端末：${esc(`${d.maker || ''} ${d.model || ''}`.trim())}／Android API ${d.sdk || '?'}／アプリ ${esc(d.version || '')}／待機の区分：${BUCKETS[d.bucket] || d.bucket || '?'}</p>
+      </div>`;
+  }
+
   const SEA_MODES = [['auto', '端末に合わせる'], ['light', '明るい海'], ['deep', '深い海'], ['progress', '進み具合で変わる']];
   const SEA_NAMES = { light: '明るい海', mid: '少し潜った海', deep: '深い海' };
   function seaNote() {
@@ -871,6 +917,7 @@
         <div class="checks">${Object.keys(CATS).map(c => `<label class="chk"><input type="checkbox" data-ncat="${c}"${cats.includes(c) ? ' checked' : ''}>${CATS[c]}</label>`).join('')}</div>
         <p class="sub">Androidアプリとの連携：${nativeLine}</p>
       </div>
+${diagBox()}
 
       <h2 class="sec">海の明るさ</h2>
       <div class="box">
@@ -893,6 +940,14 @@
     if (e.target.id === 'addCard') { openCard(null); return; }
     if (e.target.id === 'exportBtn') { await doExport(); return; }
     if (e.target.id === 'importBtn') { $('#importFile').value = ''; $('#importFile').click(); }
+    const tb = e.target.closest('[data-test]'), ob = e.target.closest('[data-open]'), n = window.DayFlowNative;
+    if (tb && n && n.testNotify) {
+      const sec = Number(tb.dataset.test);
+      n.testNotify(sec); renderSettings();
+      toast(sec >= 60 ? `${sec / 60}分後にテスト通知を出します。画面を消して待ってください` : `${sec}秒後にテスト通知を出します。画面を消して待ってください`);
+      return;
+    }
+    if (ob && n && n.openSettings) { if (!n.openSettings(ob.dataset.open)) toast('設定画面を開けませんでした'); return; }
     const sm = e.target.closest('[data-sea-mode]');
     if (sm && THEME) { THEME.setMode(sm.dataset.seaMode); THEME.setLevel(progress().level); syncBars(); renderSettings(); }
   });

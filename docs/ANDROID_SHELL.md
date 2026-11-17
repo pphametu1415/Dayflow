@@ -32,7 +32,8 @@ DayFlow の画面はWeb（このリポジトリの直下）で、Androidアプ�
 
 ### `replaceSchedule(json)`
 
-開始の通知の予定表。呼ばれるたびに全部置き換える。中身が前回と同じなら何もしない。
+開始の通知の予定表。呼ばれるたびに全部置き換え、予約も毎回張り直す（中身が前回と同じでも張り直す。スマホ側の電池の節約などで予約が消えていても、画面を開けば戻るように）。
+殻も、画面に戻るたび（`onResume`）に保存してある予定表から張り直す。
 
 ```json
 [{ "id": "u-g08a", "date": "2026-11-17", "name": "行政法規 第8回 前半", "start": 1200, "minutes": 130, "when": 1794913200000 }]
@@ -80,6 +81,33 @@ DayFlow の画面はWeb（このリポジトリの直下）で、Androidアプ�
 ### `status()`
 
 `{"version": "2.0.12", "notifications": true, "exactAlarms": true}`。設定画面に出す。
+
+### `diagnose()`（2.0.4 以降）
+
+通知が来ないときに、どこで止まっているかを見るための状態。設定画面の「通知の診断」に出す。
+
+| キー | 中身 |
+| --- | --- |
+| `notifications` | 通知が許可されているか |
+| `channelStart` | 「開始の通知」チャンネルの重要度（0＝オフ、3＝標準、4＝高） |
+| `exactAlarms` | 時刻どおりのアラームが使えるか |
+| `batteryExempt` | 電池の最適化の対象外か |
+| `bgRestricted` | バックグラウンドが制限されているか |
+| `bucket` | 待機の区分（10＝使用中 … 45＝制限） |
+| `alarms` `nextAt` `nextName` | 予約中の開始通知の件数と、いちばん近い通知 |
+| `scheduleAt` `scheduleCount` | 最後に予定表を受け取った時刻と件数 |
+| `lastFiredAt` `lastFiredName` | 最後に予定の通知を出した時刻 |
+| `testRequestedAt` `testDueAt` `testFiredAt` `testAckAt` | テスト通知を頼んだ時刻、出す予定の時刻、実際に出た時刻、［受け取った］が押された時刻 |
+| `maker` `model` `sdk` `version` | 端末とアプリ |
+
+### `testNotify(delaySec)`（2.0.4 以降）
+
+テスト通知。`delaySec` 秒後に、予定の通知と同じ仕組み（アラーム）で出す。0ならすぐ出す。
+ボタンは［受け取った］だけで、押した時刻は `testAckAt` に残る（画面の記録には入れない）。
+
+### `openSettings(which)`（2.0.4 以降）
+
+スマホの設定画面を開く。`notifications`（このアプリの通知）／`battery`（電池の最適化を外すダイアログ）／`alarms`（アラームの許可）／それ以外（アプリ情報）。開けたら `true`。
 
 ## 殻 → 画面
 

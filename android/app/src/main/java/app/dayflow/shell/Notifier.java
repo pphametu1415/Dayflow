@@ -95,6 +95,31 @@ final class Notifier {
         manager(c).notify(nid, n);
     }
 
+    static final int TEST_NOTIFICATION_ID = 9002;
+
+    /** テスト通知。late は予約した時刻からの遅れ（ミリ秒）。 */
+    static void showTest(Context c, long late) {
+        ensureChannels(c);
+        String delay = late < 60000 ? "時刻どおり" : (late / 60000) + "分遅れ";
+        Notification n = new Notification.Builder(c, CH_START)
+                .setSmallIcon(R.drawable.ic_stat)
+                .setColor(ACCENT)
+                .setContentTitle("DayFlow テスト通知")
+                .setContentText("届いています（" + delay + "）。Watchでも見えたら［受け取った］を押してください。")
+                .setCategory(Notification.CATEGORY_REMINDER)
+                .setAutoCancel(true)
+                .setShowWhen(true)
+                .setContentIntent(openApp(c))
+                .addAction(button(c, "受け取った", "test", "test", "", 0, 0, TEST_NOTIFICATION_ID))
+                .build();
+        manager(c).notify(TEST_NOTIFICATION_ID, n);
+    }
+
+    static int channelImportance(Context c, String id) {
+        NotificationChannel ch = manager(c).getNotificationChannel(id);
+        return ch == null ? -1 : ch.getImportance();
+    }
+
     static void showEnd(Context c, String name) {
         ensureChannels(c);
         Notification n = new Notification.Builder(c, CH_END)

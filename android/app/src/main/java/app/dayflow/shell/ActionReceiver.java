@@ -27,6 +27,11 @@ public class ActionReceiver extends BroadcastReceiver {
         long now = System.currentTimeMillis();
 
         Notifier.cancel(c, intent.getIntExtra("notificationId", 0));
+        if ("test".equals(action)) {                            // テスト通知：押された時刻だけ覚える
+            Store.putDiag(c, "testAckAt", now);
+            MainActivity.nudge();
+            return;
+        }
         Store.addPending(c, action, id, now);
 
         switch (action) {

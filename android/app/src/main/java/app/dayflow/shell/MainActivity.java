@@ -178,6 +178,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        Scheduler.applySchedule(this);      // 予約がスマホ側で消されていても、開けば戻す
         drain();
     }
 

@@ -32,7 +32,7 @@ final class Scheduler {
         return Build.VERSION.SDK_INT < 31 || alarms(c).canScheduleExactAlarms();
     }
 
-    private static void set(Context c, long at, PendingIntent pi) {
+    static void set(Context c, long at, PendingIntent pi) {
         AlarmManager am = alarms(c);
         try {
             if (canExact(c)) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi);
@@ -74,6 +74,8 @@ final class Scheduler {
         for (String id : Store.getAlarmIds(c)) cancelStart(c, id);
         List<String> ids = new ArrayList<>();
         long now = System.currentTimeMillis();
+        long nextAt = 0;
+        String nextName = "";
         try {
             JSONArray arr = new JSONArray(Store.getSchedule(c));
             for (int i = 0; i < arr.length(); i++) {
@@ -94,10 +96,27 @@ final class Scheduler {
                 }
                 setStartAlarm(c, id, o.optString("name", ""), o.optInt("start", 0), o.optInt("minutes", 0), at, attempt);
                 ids.add(id);
+                if (nextAt == 0 || at < nextAt) {
+                    nextAt = at;
+                    nextName = o.optString("name", "");
+                }
             }
         } catch (JSONException ignored) {
         }
         Store.setAlarmIds(c, ids);
+        Store.putDiagPair(c, "nextAt", nextAt, "nextName", nextName);
+    }
+
+    /* ---- テスト通知（設定画面の「通知の診断」から）---- */
+
+    static void scheduleTest(Context c, long at) {
+        Intent i = new Intent(c, AlarmReceiver.class)
+                .setAction(ACTION_ALARM)
+                .setData(Uri.parse("dayflow://test"))
+                .putExtra("kind", "test")
+                .putExtra("requestedAt", System.currentTimeMillis())
+                .putExtra("at", at);
+        set(c, at, PendingIntent.getBroadcast(c, 0, i, PI_FLAGS));
     }
 
     /* ---- 終了確認の通知 ---- */

@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 設定画面の「電池の最適化を外す」から、除外を頼むダイアログを出すため -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 予定の時刻ちょうどに通知するため。Android 13 以上は USE_EXACT_ALARM、12 は SCHEDULE_EXACT_ALARM。 -->
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission
