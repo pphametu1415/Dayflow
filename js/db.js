@@ -51,6 +51,11 @@
   const keyToDate = k => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
   const epochOf = (k, min) => { const d = keyToDate(k); d.setMinutes(min); return d.getTime(); };
   const parseHm = s => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+  /* 1日の区切りは深夜3時。0:00〜2:59 は前の日の続き（24:00〜26:59）として記録・表示する。 */
+  const DAY_SHIFT_MIN = 3 * 60;
+  const dayOf = ms => dateKey(new Date(ms - DAY_SHIFT_MIN * 60000));              // その時刻が属する日
+  const minOn = (k, ms) => Math.floor((ms - keyToDate(k).getTime()) / 60000);     // その日の0:00からの分（翌日の分は1440以上）
+  const dayMin = s => { const m = parseHm(s); return m < DAY_SHIFT_MIN ? m + 1440 : m; };   // 時刻の入力（0:00〜2:59 は翌日の分）
   const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   /* ---- 設定値 ---- */
@@ -86,7 +91,7 @@
     if (r) return { ok: false, reason: 'running', session: r };
     const at = o.at || Date.now();
     const s = {
-      id: uid('s'), date: dateKey(new Date(at)),
+      id: uid('s'), date: dayOf(at),
       planId: o.planId || null, unitId: o.unitId || null, cardId: o.cardId || null,
       name: o.name, category: o.category,
       startedAt: at, endedAt: null,
@@ -219,7 +224,7 @@
 
   root.DFDB = {
     all, get, put, del, putMany, clear,
-    pad, dateKey, keyToDate, epochOf, parseHm, uid,
+    pad, dateKey, keyToDate, epochOf, parseHm, uid, DAY_SHIFT_MIN, dayOf, minOn, dayMin,
     getMeta, setMeta, ensureSeed,
     running, startSession, startPlan, startCard, finishRunning, extendRunning,
     skipPlan, snoozePlan, importUnits, exportAll, importAll,

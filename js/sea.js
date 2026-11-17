@@ -77,6 +77,10 @@
     <path d="M14 13.5q4 2 8-.5" stroke="#fff" stroke-opacity=".55" stroke-width="1.4" fill="none" stroke-linecap="round"/>
     <circle cx="22" cy="7.5" r="1.6" fill="#fff"/><circle cx="22.4" cy="7.5" r=".9" fill="${EYE}"/></svg>`;
 
+  // 小魚の群れ（タイムラインの背景を泳ぐ）。ほかの生き物と同じく左を向いている
+  const minnow = (x, y, c) => `<g transform="translate(${x} ${y})"><path d="M13 5.5L20 1v9z" fill="${c}"/><ellipse cx="8" cy="5.5" rx="8.5" ry="4.6" fill="${c}"/><circle cx="4" cy="4.6" r="1.2" fill="${EYE}"/></g>`;
+  const school = `<svg viewBox="0 0 64 40" role="img" aria-label="小魚の群れ">${minnow(4, 6, '#8fd6ec')}${minnow(30, 2, '#b9e6f5')}${minnow(22, 24, '#8fd6ec')}${minnow(44, 17, '#b9e6f5')}</svg>`;
+
   // 海底（タイムラインのいちばん下＝深夜）の海藻とサンゴ
   const seaweed = `<svg viewBox="0 0 40 60" aria-hidden="true">
     <path d="M12 60c-6-12 6-16 0-28s6-14 2-24" fill="none" stroke="var(--kelp)" stroke-width="5" stroke-linecap="round"/>
@@ -97,5 +101,5 @@
   const byWeekday = [sunfish, jelly, starfish, whale, seahorse, boxfish, ray];   // 日〜土
   const names = ['マンボウ', 'ミズクラゲ', 'ヒトデ', 'クジラ', 'タツノオトシゴ', 'ハコフグ', 'エイ'];
 
-  root.DFSea = { byWeekday, names, sunfish, jelly, starfish, whale, seahorse, boxfish, ray, nowFish, seaweed, coral, icons };
+  root.DFSea = { byWeekday, names, sunfish, jelly, starfish, whale, seahorse, boxfish, ray, school, nowFish, seaweed, coral, icons };
 })(typeof self !== 'undefined' ? self : this);

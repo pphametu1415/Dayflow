@@ -2,8 +2,8 @@
 (() => {
   'use strict';
   const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
-  const APP_VERSION = '2.4.2';
-  const START = 6 * 60, END = 24 * 60, HOURPX = 64, PPM = HOURPX / 60;
+  const APP_VERSION = '2.5.0';
+  const START = 6 * 60, END = 24 * 60 + DB.DAY_SHIFT_MIN, HOURPX = 64, PPM = HOURPX / 60;   // タイムラインは 6:00〜翌3:00
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
   const CATS = { study: '勉強', exercise: '運動', hobby: '趣味', house: '家事', life: '生活', sleep: '睡眠' };
@@ -14,20 +14,20 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, x => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[x]));
 
   let S = { cards: [], units: [], plans: [], sessions: [], reviews: [], meta: {} };
-  let dateKey = DB.dateKey(new Date());
+  let dateKey = DB.dayOf(Date.now());
   let weekKey = dateKey;
   let view = 'day', planFilter = 'today';
   let editPlanId = null, newPlanMin = null, editSesId = null, newSesMin = null, editCardId = null, unitSheetId = null;
   let undo = null, drag = null, justDragged = false, reviewDraft = null, toastTimer = null;
   const overdueSnooze = {}, openMemos = new Set();
+  let mateKey = '', mateIdx = 0, mateTimer = null, swimTimer = null;
   let tlFull = false, tlFrom = START;      // タイムラインの表示開始。ふだんは最初の予定・実績・現在時刻の1時間前から
 
   /* ---------- 小道具 ---------- */
-  const today = () => DB.dateKey(new Date());
-  const nowMin = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
+  const today = () => DB.dayOf(Date.now());                 // 深夜3時までは前の日
+  const nowMin = () => DB.minOn(today(), Date.now());       // 今日の0:00からの分（深夜は1440以上）
   const hm = m => DB.pad(Math.floor(m / 60) % 24) + ':' + DB.pad(m % 60);
   const hmE = ms => { const d = new Date(ms); return DB.pad(d.getHours()) + ':' + DB.pad(d.getMinutes()); };
-  const minOfDay = ms => { const d = new Date(ms); return d.getHours() * 60 + d.getMinutes(); };
   const snap = m => Math.round(m / 5) * 5;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const fmt = m => { m = Math.round(m || 0); return m >= 60 ? Math.floor(m / 60) + '時間' + (m % 60 ? (m % 60) + '分' : '') : m + '分'; };
@@ -122,6 +122,7 @@
     $('#dateTitle').textContent = `${d.getMonth() + 1}月${d.getDate()}日（${WD[d.getDay()]}）`;
     $('#dateSub').textContent = dateKey === today() ? '今日' : dateKey;
     $('#dayMate').innerHTML = SEA.byWeekday[d.getDay()];
+    if (mateKey !== dateKey) $('#mateBubble').hidden = true;
     const ps = plansOf(dateKey).filter(p => p.status !== 'skipped'), ss = sessionsOf(dateKey);
     $('#mPlan').textContent = fmt(ps.reduce((a, p) => a + p.minutes, 0));
     $('#mAct').textContent = fmt(ss.reduce((a, s) => a + sessMin(s), 0));
@@ -165,7 +166,7 @@
 
   function renderTimeline() {
     const el = $('#timeline');
-    const marks = [...plansOf(dateKey).map(p => p.start), ...sessionsOf(dateKey).map(s => minOfDay(s.startedAt))];
+    const marks = [...plansOf(dateKey).map(p => p.start), ...sessionsOf(dateKey).map(s => DB.minOn(s.date, s.startedAt))];
     if (dateKey === today()) marks.push(nowMin());
     tlFrom = tlFull || !marks.length ? START : clamp(Math.floor(Math.min(...marks) / 60) * 60 - 60, START, END - 240);
     $('#tlToggle').textContent = tlFull ? '縮小' : '全日';
@@ -175,6 +176,7 @@
     for (let m = tlFrom; m < END; m += 60) {
       const y = (m - tlFrom) * PPM;
       h += `<div class="hourlabel${m === tlFrom ? ' first' : ''}" style="top:${y}px">${hm(m)}</div>`;
+      if (m === 24 * 60) h += `<div class="midnight" style="top:${y}px"><span>ここから翌日</span></div>`;
       h += `<button class="zone p" data-zone="p" data-slot="${m}" style="top:${y}px;height:${HOURPX}px" aria-label="${hm(m)}台に予定を追加"></button>`;
       h += `<button class="zone a" data-zone="a" data-slot="${m}" style="top:${y}px;height:${HOURPX}px" aria-label="${hm(m)}台に実績を追加"></button>`;
     }
@@ -188,8 +190,8 @@
         <span class="t">${tiny ? '<b data-time>' + hm(p.start) + '</b> ' : ''}${esc(p.name)}</span><span class="m" data-meta>${meta}</span>${done ? '<span class="stamp">済</span>' : ''}</button>`;
     }
     for (const s of sessionsOf(dateKey)) {
-      const live = s.endedAt == null, a = Math.max(minOfDay(s.startedAt), tlFrom);
-      const b = Math.min(minOfDay(s.startedAt) + sessMin(s), END);
+      const live = s.endedAt == null, from = DB.minOn(s.date, s.startedAt), a = Math.max(from, tlFrom);
+      const b = Math.min(from + sessMin(s), END);
       if (b <= a) continue;
       const hgt = Math.max(22, (b - a) * PPM - 2), tiny = hgt < 44;
       const meta = `${hmE(s.startedAt)}〜${live ? '計測中' : hmE(s.endedAt)}・${sessMin(s)}分${s.needsCheck ? '・要確認' : ''}`;
@@ -201,7 +203,8 @@
       if (nm >= tlFrom && nm <= END) h += `<div class="nowline" id="nowline" style="top:${(nm - tlFrom) * PPM}px"><span class="nowfish">${SEA.nowFish}</span></div>`;
     }
     h += `<div class="seabed" aria-hidden="true"><span class="weed">${SEA.seaweed}</span><span class="coral">${SEA.coral}</span></div>`;
-    el.innerHTML = h;
+    [...el.children].forEach(n => { if (!n.classList.contains('swimmers')) n.remove(); });   // 泳いでいる生き物の層は消さない
+    el.insertAdjacentHTML('beforeend', h);
     bindDrag();
   }
 
@@ -307,7 +310,7 @@
   });
   $('#planForm').addEventListener('submit', async e => {
     e.preventDefault();
-    const start = clamp(snap(DB.parseHm($('#planStart').value)), 0, 24 * 60 - 5);
+    const start = clamp(snap(DB.dayMin($('#planStart').value)), 0, END - 5);
     const minutes = clamp(Number($('#planMinutes').value) || 60, 5, 600);
     const fixed = $('#planFixed').checked;
     if (editPlanId) {
@@ -348,7 +351,7 @@
       `<optgroup label="カード">${S.cards.map(c => `<option value="c:${c.id}">${esc(c.name)}</option>`).join('')}</optgroup>`;
     if (s) $('#sesWhat').value = s.planId && planById(s.planId) ? 'p:' + s.planId : 'c:' + s.cardId;
     $('#sesStart').value = s ? hmE(s.startedAt) : hm(min);
-    $('#sesEnd').value = s ? (s.endedAt == null ? '' : hmE(s.endedAt)) : hm(Math.min(min + 30, 24 * 60 - 1));
+    $('#sesEnd').value = s ? (s.endedAt == null ? '' : hmE(s.endedAt)) : hm(Math.min(min + 30, END - 1));
     $('#sesEnd').required = !s || s.endedAt != null;
     $('#sesNote').textContent = s && s.endedAt == null ? '終了を空のまま保存すると、計測中のままになります。'
       : s && s.needsCheck ? '予定の終了時刻で自動的に閉じた実績です。実際の時刻に直してください。' : '';
@@ -359,10 +362,10 @@
     e.preventDefault();
     const s = editSesId ? S.sessions.find(x => x.id === editSesId) : null;
     const base = s ? s.date : dateKey;
-    const startedAt = DB.epochOf(base, DB.parseHm($('#sesStart').value));
+    const startedAt = DB.epochOf(base, DB.dayMin($('#sesStart').value));
     let endedAt = null;
     if ($('#sesEnd').value) {
-      endedAt = DB.epochOf(base, DB.parseHm($('#sesEnd').value));
+      endedAt = DB.epochOf(base, DB.dayMin($('#sesEnd').value));
       if (endedAt <= startedAt) endedAt += 24 * 3600000;       // 日付をまたいだ終了
       if (endedAt > Date.now() + 60000) { toast('終了が未来の時刻になっています'); return; }
     }
@@ -478,7 +481,7 @@
         .sort((a, b) => String(a.u.month || '').localeCompare(String(b.u.month || '')) || (a.u.seq || 0) - (b.u.seq || 0));
       if (!chain.some(x => !usable(x.p))) continue;
       const pos = chain.filter(x => usable(x.p)).map(x => ({ date: x.p.date, start: x.p.start, owner: x.u.id })).sort(cmp);
-      let pi = 0, cur = { date: D, start: 24 * 60, minutes: 0 };
+      let pi = 0, cur = { date: D, start: END, minutes: 0 };
       for (const x of chain) {
         const next = pos[pi];
         if (next && next.owner === x.u.id) { pi++; cur = { date: next.date, start: next.start, minutes: x.p.minutes }; continue; }   // 自分の枠のまま
@@ -547,7 +550,7 @@
       for (const x of early) {
         const ss = sessionsOfPlan(x.p.id).sort((a, b) => a.startedAt - b.startedAt);
         if (ss.length) {            // 計測していたら、実際にやった日時へ予定を合わせる
-          const d = new Date(ss[0].startedAt), st = clamp(d.getHours() * 60 + d.getMinutes(), 0, END - x.p.minutes);
+          const st = clamp(DB.minOn(ss[0].date, ss[0].startedAt), 0, END - x.p.minutes);
           relocate.push({ plan: x.p, to: { date: ss[0].date, start: st }, early: false });
         } else relocate.push({ plan: x.p, to: { date: t, start: x.p.start }, early: true });
       }
@@ -848,7 +851,7 @@
   const when = t => {
     if (!t) return 'まだありません';
     const d = new Date(t), k = DB.dateKey(d);
-    return `${k === today() ? '今日' : md(k)} ${hm(d.getHours() * 60 + d.getMinutes())}`;
+    return `${k === DB.dateKey(new Date()) ? '今日' : md(k)} ${hm(d.getHours() * 60 + d.getMinutes())}`;
   };
   function diagBox() {
     const n = window.DayFlowNative;
@@ -1121,6 +1124,89 @@ ${diagBox()}
   }
   window.dayFlowDrain = drainNative;     // アプリ側がボタン操作をためた直後に呼ぶ
 
+  /* ---------- その日の生き物の吹き出し ----------
+     タップするたびに話題が変わる（今日の勉強 → いま／次のコマ → 積み残し → 今週 → 試験まで）。数秒で消える。 */
+  function mateLines() {
+    const k = dateKey, t = today();
+    const studyPlan = plansOf(k).filter(p => p.category === 'study' && p.status !== 'skipped');
+    const planMin = studyPlan.reduce((a, p) => a + p.minutes, 0);
+    const actMin = sessionsOf(k).filter(s => s.category === 'study').reduce((a, s) => a + sessMin(s), 0);
+    const lines = [];
+    if (k === t) {
+      if (planMin) lines.push(actMin >= planMin ? `今日の勉強は${fmt(actMin)}。予定の${fmt(planMin)}を達成したよ！` : `今日の勉強は${fmt(actMin)}／予定${fmt(planMin)}。あと${fmt(planMin - actMin)}だよ。`);
+      else lines.push(actMin ? `今日は予定のない日だけど、${fmt(actMin)}勉強したよ。` : '今日は勉強の予定がない日だよ。');
+      const r = runningS(), p = r ? null : nextPlan();
+      if (r) lines.push(`いまは「${r.name}」の途中。${fmt(sessMin(r))}たったよ。`);
+      else if (p && p.start + p.minutes > nowMin()) lines.push(p.start > nowMin() ? `次は${hm(p.start)}から「${p.name}」だよ。` : `「${p.name}」の時間だよ。始める？`);
+    } else if (k < t) {
+      lines.push(planMin || actMin ? `この日の勉強は${fmt(actMin)}／予定${fmt(planMin)}だったよ。` : 'この日は勉強の記録がないよ。');
+    } else {
+      lines.push(studyPlan.length ? `この日は勉強の予定が${studyPlan.length}つ、合わせて${fmt(planMin)}だよ。` : 'この日は勉強の予定がないよ。');
+    }
+    const g = progress();
+    lines.push(g.outside ? `計画の期間からはみ出したコマが${g.outside}つあるよ。計画を見直そう。`
+      : g.backlog > g.limit ? `積み残しが${g.backlog}コマあるよ。計画画面の「組み直す」で整えよう。`
+        : g.backlog ? `積み残しは${g.backlog}コマ。${g.limit}コマを超える前に回収しよう。` : '積み残しはゼロ。予定どおり進んでるよ！');
+    const ws = weekStart(t), we = addDays(ws, 6);
+    const wk = S.sessions.filter(s => s.category === 'study' && s.date >= ws && s.date <= we).reduce((a, s) => a + sessMin(s), 0);
+    lines.push(wk >= TARGET_WEEK_MIN ? `今週の勉強は${fmt(wk)}。目標の${fmt(TARGET_WEEK_MIN)}を達成したよ！`
+      : `今週の勉強は${fmt(wk)}。目標の${fmt(TARGET_WEEK_MIN)}まで、あと${fmt(TARGET_WEEK_MIN - wk)}だよ。`);
+    const metas = monthMetas(), meta = metas[metas.length - 1];
+    if (meta && meta.exam) {
+      const left = Math.max(0, Math.round((DB.keyToDate(meta.exam) - DB.keyToDate(t)) / 86400000));
+      lines.push(`${meta.examLabel || '試験'}まで、あと${left}日だよ。`);
+    }
+    return lines;
+  }
+  $('#dayMate').addEventListener('click', () => {
+    if (mateKey !== dateKey) { mateKey = dateKey; mateIdx = 0; }
+    const lines = mateLines(), text = lines[mateIdx % lines.length], b = $('#mateBubble'), m = $('#dayMate');
+    mateIdx++;
+    b.textContent = text; b.hidden = false;
+    b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop');
+    m.classList.remove('hop'); void m.offsetWidth; m.classList.add('hop');
+    clearTimeout(mateTimer);
+    mateTimer = setTimeout(() => { b.hidden = true; }, clamp(3000 + text.length * 80, 4000, 8000));
+  });
+  $('#dayMate').addEventListener('animationend', e => { if (e.animationName === 'hop') $('#dayMate').classList.remove('hop'); });
+  $('#mateBubble').addEventListener('click', () => { clearTimeout(mateTimer); $('#mateBubble').hidden = true; });
+
+  /* ---------- タイムラインの背景を泳ぐ生き物（飾り）----------
+     数秒〜十数秒おきに、見えている範囲のどこかを1匹ゆっくり横切る。同時に2匹まで。
+     予定や実績のブロックより後ろを泳ぎ、タップの邪魔はしない。動きを減らす設定のときは出さない。 */
+  const SWIMMERS = [
+    { svg: SEA.school, size: 54, speed: 30 }, { svg: SEA.school, size: 46, speed: 34 },
+    { svg: SEA.whale, size: 48, speed: 16 }, { svg: SEA.sunfish, size: 38, speed: 14 },
+    { svg: SEA.boxfish, size: 30, speed: 20 }, { svg: SEA.ray, size: 44, speed: 18 },
+    { svg: SEA.seahorse, size: 32, speed: 10 }, { svg: SEA.jelly, size: 34, speed: 8 }
+  ];
+  const reduceMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  function swimTick() {
+    clearTimeout(swimTimer);
+    swimTimer = setTimeout(swimTick, 7000 + Math.random() * 9000);
+    if (document.hidden || view !== 'day' || reduceMotion()) return;
+    const el = $('#timeline'); if (!el || !el.animate) return;
+    let layer = el.querySelector('.swimmers');
+    if (!layer) { layer = document.createElement('div'); layer.className = 'swimmers'; layer.setAttribute('aria-hidden', 'true'); el.prepend(layer); }
+    if (layer.children.length >= 2) return;
+    const r = el.getBoundingClientRect();
+    const top = Math.max(0, -r.top) + 10, bottom = Math.min(r.height - 40, window.innerHeight - r.top - 20);   // 見えている範囲（海底は避ける）
+    const kind = SWIMMERS[Math.floor(Math.random() * SWIMMERS.length)];
+    if (bottom - top < kind.size + 20) return;
+    const y = Math.round(top + Math.random() * (bottom - top - kind.size));
+    const ltr = Math.random() < 0.5, w = layer.getBoundingClientRect().width, size = kind.size;
+    const node = document.createElement('div');
+    node.className = 'swimmer';
+    node.style.cssText = `top:${y}px;width:${size}px;height:${size}px`;
+    // 絵はどれも左向き。右へ泳ぐときは裏返す
+    node.innerHTML = `<div class="bob" style="animation-delay:-${(Math.random() * 4).toFixed(1)}s"><div class="face"${ltr ? ' style="transform:scaleX(-1)"' : ''}>${kind.svg}</div></div>`;
+    layer.append(node);
+    const from = ltr ? -size : w + size, to = ltr ? w + size : -size;
+    const anim = node.animate([{ transform: `translateX(${from}px)` }, { transform: `translateX(${to}px)` }],
+      { duration: (w + size * 2) / kind.speed * 1000, easing: 'linear' });
+    anim.onfinish = anim.oncancel = () => node.remove();
+  }
+
   /* ---------- 起動 ---------- */
   $$('[data-icon]').forEach(i => { i.innerHTML = SEA.icons[i.dataset.icon] || ''; });
   async function boot() {
@@ -1133,6 +1219,7 @@ ${diagBox()}
     await drainNative();          // アプリ側にたまったボタン操作を先に反映してから、通知の予定を渡す（下の commit）
     await commit();
     scrollToNow();
+    swimTimer = setTimeout(swimTick, 2500);
     if (new URLSearchParams(location.search).get('start') === 'pick') { history.replaceState(null, '', location.pathname); openPick(); }
     checkOverdue();
   }

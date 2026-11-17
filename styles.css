@@ -101,6 +101,16 @@ b,strong{font-weight:700}
 .sea .mate{position:absolute;right:16px;bottom:6px;z-index:1;width:70px;height:70px;padding:8px;border-radius:50%;
   background:radial-gradient(circle at 32% 26%,var(--bubble-a),var(--bubble-b) 62%);box-shadow:inset 0 0 0 1.5px var(--bubble-a);animation:bob 5.5s ease-in-out infinite}
 @keyframes bob{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-5px) rotate(2deg)}}
+.sea .mate{border:0;cursor:pointer;color:inherit}
+.sea .mate.hop{animation:hop .5s ease-out}
+@keyframes hop{0%{transform:translateY(0) scale(1)}35%{transform:translateY(-10px) scale(1.06,.96)}70%{transform:translateY(0) scale(.97,1.03)}100%{transform:none}}
+/* 生き物の吹き出し（タップで出て、数秒で消える） */
+.bubble{position:absolute;right:98px;bottom:34px;z-index:3;margin:0;max-width:min(260px,calc(100% - 124px));padding:10px 14px;
+  border-radius:18px 18px 4px 18px;background:var(--surface);color:var(--ink);box-shadow:var(--shadow);
+  font-size:13.5px;font-weight:700;line-height:1.55;transform-origin:100% 100%;cursor:pointer}
+.bubble::after{content:"";position:absolute;right:-8px;bottom:8px;border:8px solid transparent;border-left-color:var(--surface);border-right:0}
+.bubble.pop{animation:pop .22s ease-out}
+@keyframes pop{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:none}}
 
 /* ---- ボタン ---- */
 .btn{min-height:44px;padding:0 16px;border:1.5px solid var(--line);background:var(--surface);border-radius:999px;font-weight:700}
@@ -169,6 +179,16 @@ b,strong{font-weight:700}
 .nowfish{position:absolute;left:-13px;top:-10px;width:30px;height:18px;animation:swim 3.2s ease-in-out infinite}
 .nowfish svg{display:block;width:100%;height:100%}
 @keyframes swim{0%,100%{transform:translateX(0) rotate(-3deg)}50%{transform:translateX(5px) rotate(3deg)}}
+/* 背景を泳ぐ生き物（飾り）。ブロックより後ろ、タップは素通し */
+.swimmers{position:absolute;top:0;bottom:0;left:var(--label);right:0;z-index:1;pointer-events:none;overflow:hidden}   /* 時刻の列には入らない */
+.swimmer{position:absolute;left:0;opacity:.5;pointer-events:none;will-change:transform}
+:root[data-sea="deep"] .swimmer{opacity:.42}
+.swimmer .bob{width:100%;height:100%;animation:drift 4s ease-in-out infinite}
+.swimmer .face,.swimmer svg{display:block;width:100%;height:100%}
+@keyframes drift{0%,100%{transform:translateY(0) rotate(-3deg)}50%{transform:translateY(-6px) rotate(3deg)}}
+/* 24:00 の区切り（ここから下は翌日の0時〜3時。記録は前の日に入る） */
+.midnight{position:absolute;left:var(--label);right:0;border-top:1.5px dashed color-mix(in srgb,var(--sea) 70%,transparent);z-index:1;pointer-events:none}
+.midnight span{position:absolute;right:8px;top:2px;font-size:10.5px;font-weight:700;color:var(--sea);opacity:.85}
 /* 海底（深夜） */
 .seabed{position:absolute;left:0;right:0;bottom:0;height:20px;z-index:1;pointer-events:none}
 .seabed::before{content:"";position:absolute;inset:0;background:var(--sand);
@@ -327,4 +347,4 @@ a.link{color:var(--sea);font-weight:700}
 
 .toast{position:fixed;left:50%;bottom:calc(80px + var(--safe-b));transform:translateX(-50%);max-width:92vw;background:var(--ink);color:var(--paper);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:700;z-index:100;opacity:0;pointer-events:none;transition:opacity .2s}
 .toast.show{opacity:1}
-@media (prefers-reduced-motion:reduce){.toast{transition:none}.btn:active{transform:none}.sea .mate,.nowfish{animation:none}}
+@media (prefers-reduced-motion:reduce){.toast{transition:none}.btn:active{transform:none}.sea .mate,.sea .mate.hop,.nowfish,.bubble.pop{animation:none}.swimmers{display:none}}
