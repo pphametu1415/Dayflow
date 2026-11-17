@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
-  const APP_VERSION = '2.5.1';
+  const APP_VERSION = '2.5.2';
   const START = 6 * 60, END = 24 * 60 + DB.DAY_SHIFT_MIN, HOURPX = 64, PPM = HOURPX / 60;   // タイムラインは 6:00〜翌3:00
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -303,15 +303,42 @@
     $('#planSkip').textContent = p && p.status === 'skipped' ? 'スキップを戻す' : 'スキップ';
     $('#planStartNow').hidden = !p || !!runningS();
     show('#planBack');
+    previewPlan();
   }
-  /* カードの予定を保存したら、その長さを次回の初期値（カードの標準の長さ）として覚える。講義コマの予定は対象外。 */
-  async function learnMinutes(c, minutes) {
-    if (c.minutes !== minutes) await DB.put('cards', { ...c, minutes });
+  /* 入力中の予定を、後ろのタイムラインにその場で映す（保存するまでは見た目だけ。閉じれば元に戻る）。
+     長さを変えても、その予定1件だけ。カードの標準の長さは変えない。 */
+  function previewPlan() {
+    if (view !== 'day' || !$('#planBack').classList.contains('show')) return;
+    const el = $('#timeline'), g = el.querySelector('.blk.ghost');
+    if (g) g.remove();
+    const p = editPlanId ? planById(editPlanId) : null;
+    if (p && p.date !== dateKey) return;
+    const v = $('#planStart').value; if (!v) return;
+    const start = clamp(snap(DB.dayMin(v)), 0, END - 5);
+    const minutes = clamp(Number($('#planMinutes').value) || 0, 5, 600);
+    const a = Math.max(start, tlFrom), b = Math.min(start + minutes, END);
+    let blk = p ? el.querySelector(`[data-plan="${p.id}"]`) : null;
+    if (!blk) {
+      const c = p ? cardById(p.cardId) : cardById($('#planCard').value);
+      blk = document.createElement('div');
+      blk.className = `blk plan ghost ${(p || c || {}).category || 'study'}`;
+      blk.innerHTML = `<span class="t">${esc((p || c || {}).name || '')}</span><span class="m" data-meta></span>`;
+      el.append(blk);
+    }
+    blk.hidden = b <= a;
+    blk.style.top = `${(a - tlFrom) * PPM + 1}px`;
+    blk.style.height = `${Math.max(24, (b - a) * PPM - 2)}px`;
+    const m = blk.querySelector('[data-meta]'); if (m) m.textContent = `${hm(start)}〜${hm(start + minutes)}・${minutes}分`;
+    const t = blk.querySelector('[data-time]'); if (t) t.textContent = hm(start);
   }
+  ['#planStart', '#planMinutes'].forEach(id => $(id).addEventListener('input', previewPlan));
   $('#planCard').addEventListener('change', () => {
-    if (editPlanId) return;
-    const c = cardById($('#planCard').value); if (c) $('#planMinutes').value = c.minutes;
+    if (!editPlanId) { const c = cardById($('#planCard').value); if (c) $('#planMinutes').value = c.minutes; }
+    previewPlan();
   });
+  // シートが閉じたら（保存しなかったときも）、タイムラインを元の表示に戻す
+  new MutationObserver(() => { if (!$('#planBack').classList.contains('show') && view === 'day') renderTimeline(); })
+    .observe($('#planBack'), { attributes: true, attributeFilter: ['class'] });
   $('#planForm').addEventListener('submit', async e => {
     e.preventDefault();
     const start = clamp(snap(DB.dayMin($('#planStart').value)), 0, END - 5);
@@ -321,12 +348,11 @@
       const p = planById(editPlanId); if (!p) return;
       const next = { ...p, start, minutes, fixed, userEdited: true };
       if (start !== p.start) next.notifyAt = null;
-      if (!p.unitId) { const c = cardById($('#planCard').value); if (c) { Object.assign(next, { cardId: c.id, name: c.name, category: c.category }); await learnMinutes(c, minutes); } }
+      if (!p.unitId) { const c = cardById($('#planCard').value); if (c) Object.assign(next, { cardId: c.id, name: c.name, category: c.category }); }
       await DB.put('plans', next);
     } else {
       const c = cardById($('#planCard').value); if (!c) return;
       await DB.put('plans', { id: DB.uid('p'), date: dateKey, start, minutes, cardId: c.id, name: c.name, category: c.category, unitId: null, fixed, status: 'active', notifyAt: null, userEdited: true });
-      await learnMinutes(c, minutes);
     }
     hide('#planBack'); await commit(); toast(editPlanId ? '予定を更新しました' : '予定を追加しました');
   });
