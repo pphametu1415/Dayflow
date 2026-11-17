@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
-  const APP_VERSION = '2.4.1';
+  const APP_VERSION = '2.4.2';
   const START = 6 * 60, END = 24 * 60, HOURPX = 64, PPM = HOURPX / 60;
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -1125,6 +1125,8 @@ ${diagBox()}
   $$('[data-icon]').forEach(i => { i.innerHTML = SEA.icons[i.dataset.icon] || ''; });
   async function boot() {
     syncBars();
+    // Androidのブラウザ（ホーム画面のショートカットを含む）で開いたときは、通知が来ないことを知らせる
+    $('#browserNote').hidden = !!window.DayFlowNative || !/Android/i.test(navigator.userAgent);
     await DB.ensureSeed();
     await reload(); renderAll();
     await syncUnits();

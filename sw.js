@@ -3,7 +3,7 @@
    2) 通知のボタンを受けて、画面を開かずに記録する。 */
 importScripts('js/db.js');
 
-const CACHE = 'dayflow-2.4.1';
+const CACHE = 'dayflow-2.4.2';
 const SHELL = ['./', 'index.html', 'styles.css', 'js/db.js', 'js/theme.js', 'js/sea.js', 'js/app.js', 'test.html', 'manifest.webmanifest', 'icons/icon-192.png', 'data/index.json'];
 
 self.addEventListener('install', e => {
