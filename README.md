@@ -34,12 +34,14 @@
 | `data/units-YYYY-MM.json` | 月ごとの学習コマ |
 | `tools/make_units_2026_11.py` | 11月分の計画データを作ったスクリプト。翌月分のひな形 |
 | `tools/make_icons.py` | アイコン（画面用とAndroidアプリ用）を描くスクリプト |
-| `netlify.toml` | Netlifyの公開設定（ビルドなし） |
+| `.nojekyll` | GitHub Pages に「加工せず、そのまま公開する」と伝える空のファイル |
+| `netlify.toml` | 以前の公開先（Netlify）の設定。GitHub Pages への引っ越しを確認したら消す |
 | `docs/ANDROID_SHELL.md` | Androidアプリ（殻）の仕様と受け入れ条件 |
 | `android/` | Androidアプリ（殻）のソース。画面をネットから読み、通知を出す |
 | `.github/workflows/android.yml` | APKを自動でビルドしてリリースに載せる |
 
 ビルド工程はない。リポジトリの中身がそのまま公開物になる。
+公開先は GitHub Pages（<https://pphametu1415.github.io/Dayflow/>）。リポジトリの Settings → Pages で、`main` ブランチの `/ (root)` を公開元にしている。pushすると1〜2分で反映される。
 
 ## データ構造
 
@@ -112,7 +114,7 @@ Android Studio は使わない。`android/` を変えてpushすると GitHub Act
 
 - 画面（Web）だけの変更：pushすれば終わり。アプリは画面をネットから読むので、入れ直さない。
 - 通知の仕組み（`android/`）の変更：新しい `dayflow.apk` を入れ直す。同じ署名鍵なら上書きでき、記録は残る。
-- 画面の置き場所：`android/app/build.gradle` の `appUrl`（いまは `https://dayflow-pp1415.netlify.app/`）。ここを変えると記録の保存場所も変わるので、変える前に書き出しておく。
+- 画面の置き場所：`android/app/build.gradle` の `appUrl`（いまは `https://pphametu1415.github.io/Dayflow/`。2026-11-17 に Netlify から変更）。ここを変えると記録の保存場所も変わるので、変える前に書き出しておく。
 - v1.2 のアプリ（Android Studioで作ったもの）とは別のアプリとして入る（アプリIDは `app.dayflow.shell`）。
 
 ### 署名鍵（最初に1回だけ）

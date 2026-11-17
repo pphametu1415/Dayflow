@@ -3,7 +3,7 @@ plugins {
 }
 
 // 画面（Web）の置き場所。変えるときは -PappUrl=https://… を付けてビルドするか、ここを書き換える。
-def appUrl = providers.gradleProperty('appUrl').getOrElse('https://dayflow-pp1415.netlify.app/')
+def appUrl = providers.gradleProperty('appUrl').getOrElse('https://pphametu1415.github.io/Dayflow/')
 // GitHub Actions が実行番号を渡す。入れ直しのたびに数字が増える必要がある。
 def buildNumber = providers.gradleProperty('buildNumber').getOrElse('1') as Integer
 // 署名鍵。なければデバッグ用の鍵で署名する（その場合、ビルドごとに鍵が変わり上書きインストールできない）。
