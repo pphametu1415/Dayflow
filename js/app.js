@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
-  const APP_VERSION = '2.5.2';
+  const APP_VERSION = '2.6.0';
   const START = 6 * 60, END = 24 * 60 + DB.DAY_SHIFT_MIN, HOURPX = 64, PPM = HOURPX / 60;   // タイムラインは 6:00〜翌3:00
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -17,7 +17,7 @@
   let dateKey = DB.dayOf(Date.now());
   let weekKey = dateKey;
   let view = 'day', planFilter = 'today';
-  let editPlanId = null, newPlanMin = null, editSesId = null, newSesMin = null, editCardId = null, unitSheetId = null;
+  let editPlanId = null, newPlanMin = null, editSesId = null, newSesMin = null, editCardId = null;
   let undo = null, drag = null, justDragged = false, reviewDraft = null, toastTimer = null;
   const overdueSnooze = {}, openMemos = new Set();
   let mateKey = '', mateIdx = 0, mateTimer = null, swimTimer = null;
@@ -35,7 +35,12 @@
   const addDays = (k, n) => { const d = DB.keyToDate(k); d.setDate(d.getDate() + n); return DB.dateKey(d); };
   const md = k => { const d = DB.keyToDate(k); return (d.getMonth() + 1) + '/' + d.getDate(); };
   const weekStart = k => { const d = DB.keyToDate(k); return addDays(k, -((d.getDay() + 6) % 7)); };
-  const sessMin = s => Math.max(1, Math.round(((s.endedAt == null ? Date.now() : s.endedAt) - s.startedAt) / 60000));
+  /* 実績の分数＝開始から終了まで − 中断した時間。中断は pauses（時刻つき）と pauseMin（後から手で直した分）の合計。 */
+  const sessEnd = s => (s.endedAt == null ? Date.now() : s.endedAt);
+  const wallMin = s => Math.max(1, Math.round((sessEnd(s) - s.startedAt) / 60000));
+  const pausedMin = s => Math.round((s.pauses || []).reduce((a, p) => a + Math.max(0, (p.to == null ? Date.now() : p.to) - p.from), 0) / 60000) + (s.pauseMin || 0);
+  const sessMin = s => Math.max(1, wallMin(s) - pausedMin(s));
+  const isPaused = s => !!(s && s.endedAt == null && DB.openPause(s));
 
   /* absorbed：予備の枠をほぼ使い切った予定（コマを入れた残りが30分未満）。画面にも通知にも出さない。
      early：計測せずに先に終えたコマの予定（組み直しで元の枠を次のコマに譲ったもの）。タイムラインには出さない。 */
@@ -46,23 +51,71 @@
   const planById = id => S.plans.find(p => p.id === id);
   const unitById = id => S.units.find(u => u.id === id);
   /* コマの日付は「予定の日付」で見る（後ろへ送ったコマは、計画データの日付と予定の日付がずれる）。 */
-  const unitPlan = u => planById('u-' + u.id);
+  /* コマの「いまの予定」。途中までやったコマを組み直すと、残りの分の予定（続き：cont 1, 2, …）ができる。
+     元の予定は実績つきの履歴としてその日に残し、コマはいちばん新しい続きの予定で見る。 */
+  const unitPlan = u => (S.unitPlans && S.unitPlans.get(u.id)) || planById('u-' + u.id);
   const uDate = u => { const p = unitPlan(u); return p ? p.date : u.date; };
   const uStart = u => { const p = unitPlan(u); return p ? p.start : 0; };
   const wdOf = k => WD[DB.keyToDate(k).getDay()];
   const cardById = id => S.cards.find(c => c.id === id);
   const unitCheckable = u => u.lec || !!u.exLabel;
   const unitDone = u => unitCheckable(u) && (!u.lec || u.lecDone) && (!u.exLabel || u.exDone);
-  const unitMeasured = u => S.sessions.filter(s => s.unitId === u.id).reduce((a, s) => a + sessMin(s), 0);
+  /* コマの中の講義と演習（A問題・復習）の目安。計画データの lecMin／exMin、なければ講義55分（1.4倍速）＋残りを演習とみる。 */
+  const LEC_MIN = 55;
+  const lecMinOf = u => (u.lecMin != null ? u.lecMin : !u.lec ? 0 : u.exLabel ? Math.min(LEC_MIN, u.est) : u.est);
+  const exMinOf = u => (u.exMin != null ? u.exMin : !u.exLabel ? 0 : Math.max(0, u.est - lecMinOf(u)));
+  const partMin = (u, part) => (part === 'lec' ? lecMinOf(u) : exMinOf(u));
+  const remMin = u => (!unitCheckable(u) ? u.est : (u.lec && !u.lecDone ? lecMinOf(u) : 0) + (u.exLabel && !u.exDone ? exMinOf(u) : 0));
+  const unitPartial = u => unitCheckable(u) && !unitDone(u) && (!!(u.lec && u.lecDone) || !!(u.exLabel && u.exDone));
+  /* 予定の表示名。途中までやったコマは、残っている方を後ろに付ける（例：行政法規 第7回 前半・A問題）。 */
+  function pName(p) {
+    const u = p && p.unitId && unitById(p.unitId);
+    if (!u || unitPlan(u) !== p || !unitPartial(u)) return p ? p.name : '';
+    return `${u.subj} ${u.title}・${u.lec && !u.lecDone ? '講義' : u.exLabel}`;
+  }
+  /* 実績に「やったこと」（did：'コマID:lec' か 'コマID:ex' の並び）があれば、実績の分数をその目安の長さで按分する。
+     なければ、予定から始めた実績はそのコマの分として数える。 */
+  const didOf = s => (Array.isArray(s.did) ? s.did : []);
+  const didKey = (id, part) => id + ':' + part;
+  const splitDid = k => { const i = k.lastIndexOf(':'); return [k.slice(0, i), k.slice(i + 1)]; };
+  function sessShare(s, u) {
+    const d = didOf(s);
+    if (!d.length) return s.unitId === u.id ? sessMin(s) : 0;
+    let all = 0, mine = 0;
+    for (const k of d) {
+      const [id, part] = splitDid(k), x = unitById(id); if (!x) continue;
+      const w = Math.max(1, partMin(x, part)); all += w; if (id === u.id) mine += w;
+    }
+    return all ? sessMin(s) * mine / all : 0;
+  }
+  const unitMeasured = u => Math.round(S.sessions.reduce((a, s) => a + sessShare(s, u), 0));
+  const subjects = () => [...new Set(S.units.filter(u => u.k !== 'y' && unitCheckable(u)).map(u => u.subj))];
+  const subjUnits = subj => S.units.filter(u => u.subj === subj && u.k !== 'y' && unitCheckable(u))
+    .sort((a, b) => String(a.month || '').localeCompare(String(b.month || '')) || (a.seq || 0) - (b.seq || 0));
+  const shortTitle = u => u.title.replace(/^積み残し\s*/, '').replace(/^第(\d+)回\s*/, '$1回');
+  /* 実績の表示名。やったことを記録していれば、その中身（例：行政法規 7回前半 講義／7回後半 講義）。 */
+  function didSummary(s) {
+    const by = new Map();
+    for (const k of didOf(s)) {
+      const [id, part] = splitDid(k), u = unitById(id); if (!u) continue;
+      if (!by.has(id)) by.set(id, { u, parts: [] });
+      by.get(id).parts.push(part);
+    }
+    if (!by.size) return '';
+    const list = [...by.values()].sort((a, b) => (a.u.seq || 0) - (b.u.seq || 0));
+    const subj = [...new Set(list.map(x => x.u.subj))].join('・');
+    return subj + ' ' + list.map(x => `${shortTitle(x.u)} ${['lec', 'ex'].filter(p => x.parts.includes(p)).map(p => (p === 'lec' ? '講義' : x.u.exLabel)).join('・')}`).join('／');
+  }
+  const sesLabel = s => didSummary(s) || s.name;
   const unitActual = u => (u.manualMin != null ? u.manualMin : unitMeasured(u));
   const plannedMin = s => { const p = s.planId && planById(s.planId), c = s.cardId && cardById(s.cardId); return ((p && p.minutes) || (c && c.minutes) || 60) + (s.extendMin || 0); };
-  const plannedEnd = s => s.startedAt + plannedMin(s) * 60000;
+  const plannedEnd = s => s.startedAt + (plannedMin(s) + pausedMin(s)) * 60000;    // 中断した分だけ予定の終了も後ろへずれる
   const notifyCats = () => S.meta.notifyCats || ['study', 'exercise'];
   const monthMetas = () => Object.keys(S.meta).filter(k => k.startsWith('units:')).sort().map(k => ({ month: k.slice(6), ...S.meta[k] }));
 
   function toast(t) {
     const el = $('#toast'); el.textContent = t; el.classList.add('show');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), clamp(1400 + t.length * 70, 2200, 5000));
   }
   const show = id => $(id).classList.add('show');
   const hide = id => $(id).classList.remove('show');
@@ -80,7 +133,13 @@
   async function reload() {
     const [cards, units, plans, sessions, reviews, meta] = await Promise.all(['cards', 'units', 'plans', 'sessions', 'reviews', 'meta'].map(DB.all));
     cards.sort((a, b) => (a.order || 0) - (b.order || 0));
-    S = { cards, units, plans, sessions, reviews, meta: Object.fromEntries(meta.map(m => [m.key, m.value])) };
+    const unitPlans = new Map();
+    for (const p of plans) {
+      if (!p.unitId) continue;
+      const c = unitPlans.get(p.unitId);
+      if (!c || (p.cont || 0) > (c.cont || 0)) unitPlans.set(p.unitId, p);
+    }
+    S = { cards, units, plans, sessions, reviews, unitPlans, meta: Object.fromEntries(meta.map(m => [m.key, m.value])) };
   }
   async function commit() { await reload(); renderAll(); syncNative(); }
   /* 進み具合 → 海の明るさ。積み残しなし＝明るい海、積み残しあり＝少し潜った海、
@@ -143,11 +202,14 @@
   function renderNow() {
     const el = $('#nowCard'), r = runningS();
     if (r) {
-      el.innerHTML = `<div class="now running">
-        <div><div class="label">計測中</div><div class="name">${esc(r.name)}</div></div>
+      const pz = DB.openPause(r), pm = pausedMin(r);
+      const pauseTxt = pz ? `・${hmE(pz.from)}から中断中（${fmt(Math.max(0, Math.round((Date.now() - pz.from) / 60000)))}）`
+        : pm ? `・中断 ${fmt(pm)}` : '';
+      el.innerHTML = `<div class="now running${pz ? ' paused' : ''}">
+        <div><div class="label">${pz ? '中断中' : '計測中'}</div><div class="name">${esc(r.name)}</div></div>
         <div class="elapsed">${fmt(sessMin(r))}</div>
-        <div class="meta">${hmE(r.startedAt)} 開始・予定 ${plannedMin(r)}分（${hmE(plannedEnd(r))} まで）</div>
-        <div class="row"><button class="go" data-act="finish">完了</button></div></div>`;
+        <div class="meta">${hmE(r.startedAt)} 開始・予定 ${plannedMin(r)}分（${hmE(plannedEnd(r))} まで）${pauseTxt}</div>
+        <div class="row">${pz ? '<button class="go resume" data-act="resume">再開</button>' : '<button class="btn side" data-act="pause">中断</button>'}<button class="go" data-act="finish">完了</button></div></div>`;
       return;
     }
     if (dateKey !== today()) { el.innerHTML = ''; return; }
@@ -159,7 +221,7 @@
     const late = nowMin() - p.start;
     const lateTxt = late > 0 ? `<span class="late">・開始予定から${fmt(late)}経過</span>` : late < 0 ? `・あと${fmt(-late)}` : '';
     el.innerHTML = `<div class="now">
-      <div><div class="label">次のコマ</div><div class="name">${esc(p.name)}</div></div>
+      <div><div class="label">次のコマ</div><div class="name">${esc(pName(p))}</div></div>
       <div class="meta">${hm(p.start)}〜${hm(p.start + p.minutes)}（${p.minutes}分）${lateTxt}</div>
       <div class="row"><button class="go" data-act="start" data-id="${p.id}">開始</button><button class="btn side" data-act="skip" data-id="${p.id}">スキップ</button></div></div>`;
   }
@@ -184,19 +246,23 @@
       const a = Math.max(p.start, tlFrom), b = Math.min(p.start + p.minutes, END);
       if (b <= a) continue;
       const hgt = Math.max(24, (b - a) * PPM - 2), tiny = hgt < 44;
-      const u = p.unitId && unitById(p.unitId), done = u && unitDone(u), skipped = p.status === 'skipped';
+      const u = p.unitId && unitById(p.unitId), done = u && unitDone(u), part = u && !done && unitPlan(u) !== p && sessionsOfPlan(p.id).length, skipped = p.status === 'skipped';
       const meta = `${hm(p.start)}〜${hm(p.start + p.minutes)}・${p.minutes}分${p.fixed ? '・固定' : ''}${skipped ? '・スキップ' : ''}`;
       h += `<button class="blk plan ${p.category}${tiny ? ' tiny' : ''}${p.fixed ? ' fixed' : ''}${skipped ? ' skipped' : ''}" data-plan="${p.id}" style="top:${(a - tlFrom) * PPM + 1}px;height:${hgt}px">
-        <span class="t">${tiny ? '<b data-time>' + hm(p.start) + '</b> ' : ''}${esc(p.name)}</span><span class="m" data-meta>${meta}</span>${done ? '<span class="stamp">済</span>' : ''}</button>`;
+        <span class="t">${tiny ? '<b data-time>' + hm(p.start) + '</b> ' : ''}${esc(pName(p))}</span><span class="m" data-meta>${meta}</span>${done ? '<span class="stamp">済</span>' : part ? '<span class="stamp part">途中</span>' : ''}</button>`;
     }
     for (const s of sessionsOf(dateKey)) {
       const live = s.endedAt == null, from = DB.minOn(s.date, s.startedAt), a = Math.max(from, tlFrom);
-      const b = Math.min(from + sessMin(s), END);
+      const b = Math.min(from + wallMin(s), END);      // ブロックは開始〜終了の幅。中断した部分は縞で見せる
       if (b <= a) continue;
-      const hgt = Math.max(22, (b - a) * PPM - 2), tiny = hgt < 44;
-      const meta = `${hmE(s.startedAt)}〜${live ? '計測中' : hmE(s.endedAt)}・${sessMin(s)}分${s.needsCheck ? '・要確認' : ''}`;
-      h += `<button class="blk act ${s.category}${tiny ? ' tiny' : ''}${live ? ' live' : ''}${s.needsCheck ? ' check' : ''}" data-ses="${s.id}" style="top:${(a - tlFrom) * PPM + 1}px;height:${hgt}px">
-        <span class="t">${tiny ? '<b>' + hmE(s.startedAt) + '</b> ' : ''}${esc(s.name)}</span><span class="m">${meta}</span></button>`;
+      const hgt = Math.max(22, (b - a) * PPM - 2), tiny = hgt < 44, pm = pausedMin(s);
+      const meta = `${hmE(s.startedAt)}〜${live ? (isPaused(s) ? '中断中' : '計測中') : hmE(s.endedAt)}・${sessMin(s)}分${pm ? `（中断${pm}分）` : ''}${s.needsCheck ? '・要確認' : ''}`;
+      const gaps = (s.pauses || []).map(p => {
+        const y0 = (DB.minOn(s.date, p.from) - a) * PPM, y1 = (DB.minOn(s.date, p.to == null ? Date.now() : p.to) - a) * PPM;
+        return y1 - y0 >= 2 ? `<i class="gap" style="top:${Math.max(0, y0)}px;height:${Math.max(2, Math.min(hgt, y1) - Math.max(0, y0))}px"></i>` : '';
+      }).join('');
+      h += `<button class="blk act ${s.category}${tiny ? ' tiny' : ''}${live ? ' live' : ''}${s.needsCheck ? ' check' : ''}" data-ses="${s.id}" style="top:${(a - tlFrom) * PPM + 1}px;height:${hgt}px">${gaps}
+        <span class="t">${tiny ? '<b>' + hmE(s.startedAt) + '</b> ' : ''}${esc(sesLabel(s))}</span><span class="m">${meta}</span></button>`;
     }
     if (dateKey === today()) {
       const nm = nowMin();
@@ -246,7 +312,7 @@
 
   /* ---------- 開始・完了・スキップ ---------- */
   async function startPlan(id, source) {
-    const r = await DB.startPlan(id, source || 'phone');
+    const r = await DB.startPlan(id, source || 'phone', null, pName(planById(id)));
     if (!r.ok) { toast(r.reason === 'running' ? '別の計測が進行中です。先に完了してください' : '開始できませんでした'); return false; }
     await commit(); toast('計測を開始しました'); return true;
   }
@@ -260,7 +326,16 @@
     if (!r.ok) return;
     await commit();
     toast(`完了を記録しました（${fmt(sessMin(r.session))}）`);
-    if (r.session.unitId && unitById(r.session.unitId) && unitCheckable(unitById(r.session.unitId))) openUnit(r.session.unitId);
+    if (r.session.category === 'study' && subjects().length) openDid(r.session.id);
+  }
+  async function pauseRun() {
+    const r = await DB.pauseRunning(); if (!r.ok) return;
+    await commit(); toast('中断しました。戻ったら「再開」を押してください');
+  }
+  async function resumeRun() {
+    const r = await DB.resumeRunning(); if (!r.ok) return;
+    const p = (r.session.pauses || []).slice(-1)[0];
+    await commit(); toast(p ? `再開しました（中断 ${fmt(Math.max(1, Math.round((p.to - p.from) / 60000)))}）` : '再開しました');
   }
   async function skipPlan(id, skipped) {
     await DB.skipPlan(id, skipped);
@@ -270,7 +345,7 @@
   /* 計測したまま予定終了を大きく過ぎていたら、いつ終わったかを確認する（終了し忘れ対策）。 */
   function checkOverdue() {
     const r = runningS();
-    if (!r || anySheetOpen()) return;
+    if (!r || anySheetOpen() || isPaused(r)) return;
     const end = plannedEnd(r), now = Date.now();
     if (now < end + OVERDUE_MIN * 60000 || (overdueSnooze[r.id] || 0) > now) return;
     $('#odText').textContent = `「${r.name}」を ${hmE(r.startedAt)} から計測中です。予定の終了は ${hmE(end)} でした。`;
@@ -292,7 +367,7 @@
     const unitLinked = !!(p && p.unitId);
     $('#planCardWrap').hidden = unitLinked;
     $('#planUnitName').hidden = !unitLinked;
-    if (unitLinked) $('#planUnitName').textContent = p.name;
+    if (unitLinked) $('#planUnitName').textContent = pName(p);
     const card = p ? cardById(p.cardId) : S.cards[0];
     if (card) $('#planCard').value = card.id;
     $('#planStart').value = hm(p ? p.start : min);
@@ -378,17 +453,32 @@
     if (s && s.planId && !plans.some(p => p.id === s.planId) && planById(s.planId)) plans.push(planById(s.planId));
     $('#sesSheetTitle').textContent = s ? '実績を修正' : '実績を追加';
     $('#sesWhat').innerHTML =
-      (plans.length ? `<optgroup label="予定">${plans.map(p => `<option value="p:${p.id}">${hm(p.start)} ${esc(p.name)}</option>`).join('')}</optgroup>` : '') +
+      (plans.length ? `<optgroup label="予定">${plans.map(p => `<option value="p:${p.id}">${hm(p.start)} ${esc(pName(p))}</option>`).join('')}</optgroup>` : '') +
       `<optgroup label="カード">${S.cards.map(c => `<option value="c:${c.id}">${esc(c.name)}</option>`).join('')}</optgroup>`;
     if (s) $('#sesWhat').value = s.planId && planById(s.planId) ? 'p:' + s.planId : 'c:' + s.cardId;
     $('#sesStart').value = s ? hmE(s.startedAt) : hm(min);
     $('#sesEnd').value = s ? (s.endedAt == null ? '' : hmE(s.endedAt)) : hm(Math.min(min + 30, END - 1));
     $('#sesEnd').required = !s || s.endedAt != null;
+    $('#sesPause').value = s && pausedMin(s) ? pausedMin(s) : '';
+    $('#sesPause').placeholder = '0';
     $('#sesNote').textContent = s && s.endedAt == null ? '終了を空のまま保存すると、計測中のままになります。'
       : s && s.needsCheck ? '予定の終了時刻で自動的に閉じた実績です。実際の時刻に直してください。' : '';
     $('#sesDelete').hidden = !s;
+    syncSesDid();
     show('#sesBack');
   }
+  /* 勉強の実績なら「やったこと」の欄を出す。新しく追加する実績は、保存したあとに記録の画面を開く。 */
+  function syncSesDid() {
+    const s = editSesId ? S.sessions.find(x => x.id === editSesId) : null;
+    const what = $('#sesWhat').value || '';
+    const p = what.startsWith('p:') && planById(what.slice(2)), c = what.startsWith('c:') && cardById(what.slice(2));
+    const study = ((p || c || {}).category) === 'study' && subjects().length > 0;
+    $('#sesDidWrap').hidden = !study;
+    $('#sesDid').textContent = !s ? '保存したあとに記録' : didSummary(s) || '記録する';
+    $('#sesDid').disabled = !s;
+  }
+  $('#sesWhat').addEventListener('change', syncSesDid);
+  $('#sesDid').onclick = () => { if (!editSesId) return; const id = editSesId; hide('#sesBack'); openDid(id); };
   $('#sesForm').addEventListener('submit', async e => {
     e.preventDefault();
     const s = editSesId ? S.sessions.find(x => x.id === editSesId) : null;
@@ -404,7 +494,7 @@
     const what = $('#sesWhat').value, rec = {};
     if (what.startsWith('p:')) {
       const p = planById(what.slice(2)); if (!p) return;
-      Object.assign(rec, { planId: p.id, unitId: p.unitId || null, cardId: p.cardId, name: p.name, category: p.category });
+      Object.assign(rec, { planId: p.id, unitId: p.unitId || null, cardId: p.cardId, name: pName(p), category: p.category });
     } else {
       const c = cardById(what.slice(2)); if (!c) return;
       Object.assign(rec, { planId: null, unitId: null, cardId: c.id, name: c.name, category: c.category });
@@ -412,8 +502,17 @@
     const next = s
       ? { ...s, ...rec, startedAt, endedAt, endSource: endedAt == null ? null : 'edited', needsCheck: false }
       : { id: DB.uid('s'), date: base, ...rec, startedAt, endedAt, startSource: 'edited', endSource: 'edited', needsCheck: false, extendMin: 0 };
+    // 中断の分数を手で直したら、時刻つきの中断（pauses）は捨てて分数だけ持つ。計測中の中断は残す
+    const pv = $('#sesPause').value.trim() === '' ? 0 : clamp(Math.round(Number($('#sesPause').value)) || 0, 0, 600);
+    if (!s || pv !== pausedMin(s)) {
+      const open = s && DB.openPause(s);
+      next.pauses = open ? [open] : [];
+      next.pauseMin = Math.max(0, pv - (open ? pausedMin({ pauses: [open] }) : 0));
+    }
+    if (endedAt != null && pausedMin(next) >= wallMin(next)) { toast('中断が、開始から終了までの時間より長くなっています'); return; }
     await DB.put('sessions', next);
     hide('#sesBack'); await commit(); toast(s ? '実績を修正しました' : '実績を追加しました');
+    if (!s && next.category === 'study' && next.endedAt != null && subjects().length) openDid(next.id);
   });
   $('#sesDelete').onclick = async () => {
     if (!editSesId) return;
@@ -433,22 +532,73 @@
     hide('#pickBack'); await startCard(b.dataset.pick);
   });
 
-  /* ---------- コマの完了チェック ---------- */
-  function openUnit(id) {
-    const u = unitById(id); if (!u) return;
-    unitSheetId = id;
-    $('#unitTitle').textContent = `${u.subj} ${u.title}`;
-    $('#unitSub').textContent = `実績 ${fmt(unitActual(u))}／目安 ${u.est}分。終わったものにチェックを付けてください。`;
-    $('#unitChecks').innerHTML =
-      (u.lec ? `<label class="chk"><input type="checkbox" id="ucLec"${u.lecDone ? ' checked' : ''}>講義</label>` : '') +
-      (u.exLabel ? `<label class="chk"><input type="checkbox" id="ucEx"${u.exDone ? ' checked' : ''}>${esc(u.exLabel)}</label>` : '');
-    $('#unitMemo').value = u.memo || '';
-    show('#unitBack');
+  /* ---------- やったこと（実績ごとに、進んだところを記録する）----------
+     予定と違うところまで進んだ日のために、科目・講義の回・どの回の演習（A問題など）を別々に付ける。
+     付けたものはコマの完了（lecDone／exDone）になり、実績の did に残る（実績の分数はこれで按分）。
+     ボタンは押すたびに  空き → この実績でやった → 空き  と変わる。前に終えたもの（枠だけの印）を押すと、この実績でやったことになる。 */
+  let didSesId = null, didDraft = null, didMine = null, didSubj = '', didAll = false;
+  function openDid(id) {
+    const s = S.sessions.find(x => x.id === id); if (!s) return;
+    const subs = subjects(); if (!subs.length) return;
+    didSesId = id; didAll = false;
+    didDraft = new Map(S.units.filter(unitCheckable).map(u => [u.id, { lec: !!u.lecDone, ex: !!u.exDone }]));
+    didMine = new Set(didOf(s).filter(k => { const [uid, part] = splitDid(k), d = didDraft.get(uid); return d && d[part]; }));
+    const first = didOf(s).map(k => unitById(splitDid(k)[0])).find(Boolean);
+    const planned = s.unitId && unitById(s.unitId), card = s.cardId && cardById(s.cardId);
+    didSubj = (first || planned || {}).subj
+      || subs.find(x => (card && card.name.includes(x)) || String(s.name || '').includes(x)) || subs[0];
+    $('#didSub').textContent = `${md(s.date)} ${hmE(s.startedAt)}〜${s.endedAt == null ? '計測中' : hmE(s.endedAt)}・${fmt(sessMin(s))}${pausedMin(s) ? `（中断${fmt(pausedMin(s))}）` : ''}`;
+    renderDid();
+    show('#didBack');
   }
-  $('#unitSave').onclick = async () => {
-    const u = unitById(unitSheetId); if (!u) return;
-    await DB.put('units', { ...u, lecDone: $('#ucLec') ? $('#ucLec').checked : u.lecDone, exDone: $('#ucEx') ? $('#ucEx').checked : u.exDone, memo: $('#unitMemo').value });
-    hide('#unitBack'); await commit(); toast('コマの記録を保存しました');
+  function renderDid() {
+    const s = S.sessions.find(x => x.id === didSesId); if (!s) return;
+    const subs = subjects();
+    $('#didSubj').innerHTML = subs.map(x => `<button type="button" data-dsubj="${esc(x)}" aria-pressed="${x === didSubj ? 'true' : 'false'}">${esc(x)}</button>`).join('');
+    const list = subjUnits(didSubj);
+    const open = list.findIndex(u => { const d = didDraft.get(u.id); return (u.lec && !d.lec) || (u.exLabel && !d.ex); });
+    const mineIdx = list.map((u, i) => ([...didMine].some(k => splitDid(k)[0] === u.id) || u.id === s.unitId ? i : -1)).filter(i => i >= 0);
+    let from = 0, to = list.length;
+    if (!didAll) {
+      const anchor = [open < 0 ? list.length - 1 : open, ...mineIdx];
+      from = Math.max(0, Math.min(...anchor) - 1);
+      to = Math.min(list.length, Math.max(from + 6, Math.max(...anchor) + 2));
+    }
+    const chip = (u, part, label) => {
+      const on = didDraft.get(u.id)[part], mine = didMine.has(didKey(u.id, part));
+      return `<button type="button" class="part${on ? (mine ? ' mine' : ' before') : ''}" data-du="${u.id}" data-dp="${part}" aria-pressed="${on ? 'true' : 'false'}">${esc(label)}${on && !mine ? '<small>済</small>' : ''}</button>`;
+    };
+    $('#didRows').innerHTML = list.slice(from, to).map(u =>
+      `<div class="didrow${u.id === s.unitId ? ' planned' : ''}"><span class="ttl">${esc(u.title)}${u.id === s.unitId ? '<small>予定していたコマ</small>' : ''}</span>
+        <span class="parts">${u.lec ? chip(u, 'lec', '講義') : ''}${u.exLabel ? chip(u, 'ex', u.exLabel) : ''}</span></div>`).join('')
+      || '<p class="sub">この科目のコマはありません。</p>';
+    $('#didMore').hidden = list.length <= 6 && !didAll;
+    $('#didMore').textContent = didAll ? '近くの回だけ表示' : `すべての回を表示（${list.length}コマ）`;
+    const n = didMine.size;
+    $('#didCount').textContent = n ? `この実績でやったこと：${n}つ` : 'やったものを押してください';
+  }
+  $('#didSubj').addEventListener('click', e => { const b = e.target.closest('[data-dsubj]'); if (!b) return; didSubj = b.dataset.dsubj; didAll = false; renderDid(); });
+  $('#didRows').addEventListener('click', e => {
+    const b = e.target.closest('[data-du]'); if (!b) return;
+    const d = didDraft.get(b.dataset.du), part = b.dataset.dp, k = didKey(b.dataset.du, part);
+    if (didMine.has(k)) { didMine.delete(k); d[part] = false; }
+    else { didMine.add(k); d[part] = true; }
+    renderDid();
+  });
+  $('#didMore').onclick = () => { didAll = !didAll; renderDid(); };
+  $('#didLater').onclick = () => { didSesId = null; hide('#didBack'); };
+  $('#didSave').onclick = async () => {
+    const s = S.sessions.find(x => x.id === didSesId); if (!s) { hide('#didBack'); return; }
+    const changed = [];
+    for (const u of S.units) {
+      const d = didDraft.get(u.id); if (!d) continue;
+      if (!!u.lecDone !== d.lec || !!u.exDone !== d.ex) changed.push({ ...u, lecDone: d.lec, exDone: d.ex });
+    }
+    if (changed.length) await DB.putMany('units', changed);
+    await DB.put('sessions', { ...s, did: [...didMine] });
+    didSesId = null; hide('#didBack'); await commit();
+    const f = planFlow();
+    toast(changed.length && f.moves.length ? 'やったことを記録しました。計画の「組み直す」で、この先の予定に反映できます' : 'やったことを記録しました');
   };
 
   /* ---------- 予定の調整 ---------- */
@@ -506,6 +656,7 @@
       .filter(p => p && !p.absorbed && !p.fixed && p.status !== 'skipped' && usable(p) && !sessionsOfPlan(p.id).length)
       .map(p => ({ id: p.id, date: p.date, start: p.start, minutes: p.minutes, changed: false })).sort(cmp);
     let overflowDate = S.units.reduce((m, u) => { const d = uDate(u); return d > m ? d : m; }, D);
+    const mins = x => (unitPartial(x.u) ? Math.min(x.p.minutes, remMin(x.u)) : x.p.minutes);   // 途中までやったコマは残りの分だけ
     const moves = [];
     for (const k of [...new Set(items.map(x => x.u.k))]) {
       const chain = items.filter(x => x.u.k === k)
@@ -515,14 +666,14 @@
       let pi = 0, cur = { date: D, start: END, minutes: 0 };
       for (const x of chain) {
         const next = pos[pi];
-        if (next && next.owner === x.u.id) { pi++; cur = { date: next.date, start: next.start, minutes: x.p.minutes }; continue; }   // 自分の枠のまま
-        const buf = buffers.find(b => b.minutes >= x.p.minutes && after(b, cur) && (!next || cmp(b, next) < 0));
+        if (next && next.owner === x.u.id) { pi++; cur = { date: next.date, start: next.start, minutes: mins(x) }; continue; }   // 自分の枠のまま
+        const buf = buffers.find(b => b.minutes >= mins(x) && after(b, cur) && (!next || cmp(b, next) < 0));
         let to, via = 'slot';
-        if (buf) { to = { date: buf.date, start: buf.start }; buf.start += x.p.minutes; buf.minutes -= x.p.minutes; buf.changed = true; via = 'buffer'; }
+        if (buf) { to = { date: buf.date, start: buf.start }; buf.start += mins(x); buf.minutes -= mins(x); buf.changed = true; via = 'buffer'; }
         else if (next) { to = { date: next.date, start: next.start }; pi++; }
         else { overflowDate = addDays(overflowDate > cur.date ? overflowDate : cur.date, 1); to = { date: overflowDate, start: 20 * 60 }; via = 'overflow'; }
-        cur = { date: to.date, start: to.start, minutes: x.p.minutes };
-        moves.push({ plan: x.p, to, via, displaced: !usable(x.p) });
+        cur = { date: to.date, start: to.start, minutes: mins(x) };
+        moves.push({ plan: x.p, to, minutes: mins(x), via, displaced: !usable(x.p) });
       }
     }
     moves.sort((a, b) => cmp(a.to, b.to));
@@ -544,8 +695,7 @@
       + (plan.buffers.length ? `予備の枠を${plan.buffers.length}つ使います。` : '');
     $('#cantWarn').hidden = !plan.overflow.length;
     if (plan.overflow.length) $('#cantWarn').textContent = `予備が足りないため、${plan.overflow.length}コマは計画の最終日より後（${md(plan.overflow[0].to.date)}以降）に入ります。翌月の計画と重なる場合があります。`;
-    $('#cantList').innerHTML = plan.moves.map(m =>
-      `<li><b>${esc(m.plan.name)}</b><span>${day(m.plan.date)}${hm(m.plan.start)} → ${day(m.to.date)}${hm(m.to.start)}${m.via === 'buffer' ? '・予備の枠' : m.via === 'overflow' ? '・計画の外' : ''}</span></li>`).join('');
+    $('#cantList').innerHTML = plan.moves.map(moveLine).join('');
     $('#cantYes').textContent = '後ろへ送る';
     hide('#adjustBack'); show('#cantBack');
   }
@@ -554,15 +704,25 @@
   /* ---------- 進み具合に合わせて組み直す（計画画面のボタン）----------
      遅れているとき：過ぎた日の未完了コマ（積み残し）を、これからの枠へ順番どおりに入れ直す。
                      枠が足りない分は予備の枠を使い、それでも足りなければ計画の外に置いて知らせる。
-     進んでいるとき：先に終えたコマの枠が空くので、続きのコマを1つずつ前へ詰める。予備の枠は使わない。
+     進んでいるとき：先に終えたコマの枠が空くので、続きのコマを前へ詰める。予備の枠は使わない。
+     途中までやったコマ（講義だけ済んだ、など）は、残っている分の長さで入れる。空いた時間には次のコマを詰める。
+     やりかけ（実績がついた）のまま残ったコマは、元の予定を履歴として残し、残りの分を「続き」の予定にして入れ直す。
      決まりは「この日は無理」と同じ（学習コマだけ・科目ごと・講義の順番は変えない・直前の1回は元に戻せる）。
-     やりかけ（実績がついた）コマと、固定した予定は動かさない。 */
+     計測中のコマと、固定した予定は動かさない。 */
+  function slotSpans() {          // 計画データの時間帯（例 20:00–22:30）。枠の中の空きを使うのに使う
+    return monthMetas().flatMap(m => Object.values(m.slots || {})).map(x => {
+      const st = DB.parseHm(x.start || '0:00'), mm = String(x.label || '').match(/[–\-〜~]\s*(\d{1,2}):(\d{2})/);
+      return { s: st, e: mm ? Number(mm[1]) * 60 + Number(mm[2]) : st };
+    }).filter(x => x.e > x.s);
+  }
   function planFlow() {
-    const t = today(), nm = nowMin();
+    const t = today(), nm = nowMin(), run = runningS();
+    const nowStart = Math.ceil((nm + 1) / 5) * 5;
     const usable = p => p.date > t || (p.date === t && p.start + p.minutes > nm);   // まだ使える枠（今日の分は終了時刻が先なら可）
     const ahead = p => p.date > t || (p.date === t && p.start > nm);                 // これから始まる枠
     const cmp = (a, b) => (a.date === b.date ? a.start - b.start : (a.date < b.date ? -1 : 1));
     const after = (a, c) => a.date > c.date || (a.date === c.date && a.start >= c.start + c.minutes);
+    const spans = slotSpans();
     const all = S.units.filter(u => u.k !== 'y' && unitCheckable(u)).map(u => ({ u, p: unitPlan(u) }))
       .filter(x => x.p && !x.p.absorbed && !x.p.early && !x.p.fixed);
     const buffers = S.units.filter(u => u.k === 'y').map(unitPlan)
@@ -576,8 +736,18 @@
         .sort((a, b) => String(a.u.month || '').localeCompare(String(b.u.month || '')) || (a.u.seq || 0) - (b.u.seq || 0));
       // 先に終えたコマ：これからの枠に残っている予定は、枠を空ける
       const early = chain.filter(x => unitDone(x.u) && ahead(x.p));
-      const movers = chain.filter(x => !unitDone(x.u) && !sessionsOfPlan(x.p.id).length && !(x.p.status === 'skipped' && usable(x.p)));
-      if (!early.length && !movers.some(x => !usable(x.p))) continue;
+      const movers = [];
+      for (const x of chain) {
+        if (unitDone(x.u) || (run && (run.planId === x.p.id || run.unitId === x.u.id))) continue;    // 済み・計測中
+        if (sessionsOfPlan(x.p.id).length) {         // やりかけ：残りを続きの予定にする
+          const n = Math.max(0, ...S.plans.filter(p => p.unitId === x.u.id).map(p => p.cont || 0)) + 1;
+          movers.push({ ...x, cont: true, newId: `u-${x.u.id}-c${n}`, minutes: remMin(x.u), displaced: true });
+          continue;
+        }
+        if (x.p.status === 'skipped' && usable(x.p)) continue;
+        movers.push({ ...x, cont: false, minutes: unitPartial(x.u) ? Math.min(x.p.minutes, remMin(x.u)) : x.p.minutes, displaced: !usable(x.p) });
+      }
+      if (!early.length && !movers.some(m => m.displaced || m.minutes !== m.p.minutes)) continue;
       for (const x of early) {
         const ss = sessionsOfPlan(x.p.id).sort((a, b) => a.startedAt - b.startedAt);
         if (ss.length) {            // 計測していたら、実際にやった日時へ予定を合わせる
@@ -585,37 +755,66 @@
           relocate.push({ plan: x.p, to: { date: ss[0].date, start: st }, early: false });
         } else relocate.push({ plan: x.p, to: { date: t, start: x.p.start }, early: true });
       }
+      // この科目が使える枠（まだ使える自分の予定の時間と、先に終えたコマの時間）を、続いている時間ごとにまとめる
       const pos = [
-        ...movers.filter(x => usable(x.p)).map(x => ({ date: x.p.date, start: x.p.start, owner: x.u.id })),
-        ...early.map(x => ({ date: x.p.date, start: x.p.start, owner: null }))
-      ].sort(cmp);
-      let pi = 0, cur = { date: t, start: nm, minutes: 0 };
-      movers.forEach((x, i) => {
-        const next = pos[pi], short = movers.length - i > pos.length - pi;
-        if (next && next.owner === x.u.id) { pi++; cur = { date: next.date, start: next.start, minutes: x.p.minutes }; return; }   // 自分の枠のまま
-        const buf = short ? buffers.find(b => b.minutes >= x.p.minutes && after(b, cur) && (!next || cmp(b, next) < 0)) : null;
+        ...movers.filter(m => !m.cont && usable(m.p)).map(m => m.p),
+        ...early.map(x => x.p)
+      ].map(p => {
+        const st = p.date === t ? Math.max(p.start, nowStart) : p.start;
+        return { date: p.date, start: st, end: p.start + p.minutes };
+      }).filter(q => q.end > q.start).sort(cmp);
+      const W = [];
+      for (const q of pos) {
+        const w = W[W.length - 1];
+        if (w && w.date === q.date && q.start <= w.end + 15) w.end = Math.max(w.end, q.end);
+        else W.push({ ...q });
+      }
+      // 枠の時間帯（計画データの slots）の終わりまでは使ってよい。ただしほかの予定の手前まで
+      const mine = new Set(chain.map(x => x.p.id));
+      for (const w of W) {
+        const sp = spans.find(x => w.start >= x.s && w.start < x.e);
+        let lim = sp ? Math.max(w.end, sp.e) : w.end;
+        for (const p of S.plans) {
+          if (p.date !== w.date || mine.has(p.id) || p.absorbed || p.early || p.status === 'skipped') continue;
+          if (p.start >= w.end && p.start < lim) lim = p.start;
+        }
+        w.cap = Math.max(w.end, lim) - w.start;
+      }
+      let wi = 0, used = 0, cur = { date: t, start: nm, minutes: 0 };
+      const capLeft = () => W.slice(wi).reduce((a, w, i) => a + w.cap - (i === 0 ? used : 0), 0);
+      movers.forEach((m, i) => {
+        const short = movers.slice(i).reduce((a, x) => a + x.minutes, 0) > capLeft();
+        while (wi < W.length && used > 0 && W[wi].cap - used < m.minutes) { wi++; used = 0; }   // 入らなければ次の枠へ（空の枠なら長くても入れる）
+        const w = W[wi], here = w ? { date: w.date, start: w.start + used } : null;
+        const buf = short ? buffers.find(b => b.minutes >= m.minutes && after(b, cur) && (!here || cmp(b, here) < 0)) : null;
         let to, via = 'slot';
-        if (buf) { to = { date: buf.date, start: buf.start }; buf.start += x.p.minutes; buf.minutes -= x.p.minutes; buf.changed = true; via = 'buffer'; }
-        else if (next) { to = { date: next.date, start: next.start }; pi++; }
+        if (buf) { to = { date: buf.date, start: buf.start }; buf.start += m.minutes; buf.minutes -= m.minutes; buf.changed = true; via = 'buffer'; }
+        else if (w) { to = here; used += m.minutes; }
         else { overflowDate = addDays(overflowDate > cur.date ? overflowDate : cur.date, 1); to = { date: overflowDate, start: 20 * 60 }; via = 'overflow'; }
-        cur = { date: to.date, start: to.start, minutes: x.p.minutes };
-        moves.push({ plan: x.p, to, via, displaced: !usable(x.p), earlier: cmp(to, x.p) < 0 });
+        cur = { date: to.date, start: to.start, minutes: m.minutes };
+        if (!m.cont && to.date === m.p.date && to.start === m.p.start && m.minutes === m.p.minutes) return;   // 自分の枠のまま
+        moves.push({
+          plan: m.p, unit: m.u, to, minutes: m.minutes, via, cont: m.cont, newId: m.newId || null, displaced: m.displaced,
+          earlier: !m.cont && cmp(to, m.p) < 0, shortened: !m.cont && m.minutes < m.p.minutes
+        });
       });
-      freed += pos.length - pi;
+      freed += W.length - wi - (used > 0 ? 1 : 0);
     }
     // コマの長さが枠の持ち主と違っても重ならないよう、同じ日の中で後ろへ寄せる
-    const dest = new Map(moves.map(m => [m.plan.id, m]));
     const gone = new Set(relocate.map(r => r.plan.id));
-    const used = new Map(buffers.filter(b => b.changed).map(b => [b.id, b]));      // 使った予備は、縮めたあとの時刻で見る
+    const movedIds = new Set(moves.filter(m => !m.cont).map(m => m.plan.id));
+    const usedBuf = new Map(buffers.filter(b => b.changed).map(b => [b.id, b]));      // 使った予備は、縮めたあとの時刻で見る
+    const items = [];
+    for (const p of S.plans) {
+      if (p.category !== 'study' || p.absorbed || p.early || gone.has(p.id) || movedIds.has(p.id) || p.status === 'skipped') continue;
+      if (sessionsOfPlan(p.id).length && !(run && run.planId === p.id)) continue;    // 実績のついた予定は履歴
+      const b = usedBuf.get(p.id);
+      if (b && b.minutes < 30) continue;
+      items.push({ d: p.date, start: b ? b.start : p.start, minutes: b ? b.minutes : p.minutes, m: null });
+    }
+    for (const m of moves) items.push({ d: m.to.date, start: m.to.start, minutes: m.minutes, m });
     for (const d of [...new Set(moves.map(m => m.to.date))]) {
-      const day = S.plans.filter(p => p.category === 'study' && !p.absorbed && !p.early && !gone.has(p.id) && p.status !== 'skipped'
-        && !(used.has(p.id) && used.get(p.id).minutes < 30)
-        && (dest.has(p.id) ? dest.get(p.id).to.date === d : p.date === d))
-        .map(p => {
-          const m = dest.get(p.id), b = used.get(p.id);
-          return { m, start: m ? m.to.start : b ? b.start : p.start, minutes: b ? b.minutes : p.minutes };
-        })
-        .sort((a, b) => a.start - b.start || (a.m ? 1 : -1));
+      const day = items.filter(x => x.d === d).sort((a, b) => a.start - b.start || (a.m ? 1 : -1));
       let end = 0;
       for (const x of day) {
         if (x.m && x.start < end) { x.start = Math.min(end, END - x.minutes); x.m.to.start = x.start; }
@@ -625,26 +824,32 @@
     moves.sort((a, b) => cmp(a.to, b.to));
     return {
       kind: 'flow', date: t, moves, relocate, buffers: buffers.filter(b => b.changed), freed,
-      displaced: moves.filter(m => m.displaced).length, shifted: moves.filter(m => !m.displaced && !m.earlier).length,
-      pulled: moves.filter(m => m.earlier).length, overflow: moves.filter(m => m.via === 'overflow')
+      displaced: moves.filter(m => m.displaced).length, shifted: moves.filter(m => !m.displaced && !m.earlier && !m.shortened).length,
+      pulled: moves.filter(m => m.earlier).length, shortened: moves.filter(m => m.shortened).length,
+      overflow: moves.filter(m => m.via === 'overflow')
     };
   }
+  const moveLine = m => {
+    const day = k => `${md(k)}（${wdOf(k)}）`;
+    const len = m.cont || m.minutes !== m.plan.minutes ? `・${m.minutes}分` : '';
+    const tag = m.cont ? '・続き' : m.via === 'buffer' ? '・予備の枠' : m.via === 'overflow' ? '・計画の外' : m.earlier ? '・前倒し' : '';
+    return `<li><b>${esc(pName(m.plan))}</b><span>${day(m.plan.date)}${hm(m.plan.start)} → ${day(m.to.date)}${hm(m.to.start)}${len}${tag}</span></li>`;
+  };
   function openFlow() {
     const plan = planFlow();
     if (!plan.moves.length) { toast('組み直すコマがありません'); return; }
     cantPlan = plan;
-    const day = k => `${md(k)}（${wdOf(k)}）`;
     $('#cantTitle').textContent = '進み具合に合わせて組み直す';
     $('#cantSummary').textContent =
       (plan.displaced ? `積み残しの${plan.displaced}コマを、これからの枠へ入れ直します。` : '')
-      + (plan.shifted ? `続きの${plan.shifted}コマは、順番どおりに1つずつ後ろへずれます。` : '')
-      + (plan.pulled ? `先に終えたコマの分、${plan.pulled}コマを前へ詰めます。` : '')
+      + (plan.shortened ? `途中まで進んだ${plan.shortened}コマは、残っている分の長さにします。` : '')
+      + (plan.shifted ? `続きの${plan.shifted}コマは、順番どおりに後ろへずれます。` : '')
+      + (plan.pulled ? `空いた時間に、${plan.pulled}コマを前へ詰めます。` : '')
       + (plan.buffers.length ? `予備の枠を${plan.buffers.length}つ使います。` : '')
-      + (plan.freed ? `いちばん後ろに${plan.freed}コマ分の空きができます。` : '');
+      + (plan.freed ? `いちばん後ろに${plan.freed}枠の空きができます。` : '');
     $('#cantWarn').hidden = !plan.overflow.length;
     if (plan.overflow.length) $('#cantWarn').textContent = `予備が足りないため、${plan.overflow.length}コマは計画の最終日より後（${md(plan.overflow[0].to.date)}以降）に入ります。翌月の計画と重なる場合があります。`;
-    $('#cantList').innerHTML = plan.moves.map(m =>
-      `<li><b>${esc(m.plan.name)}</b><span>${day(m.plan.date)}${hm(m.plan.start)} → ${day(m.to.date)}${hm(m.to.start)}${m.via === 'buffer' ? '・予備の枠' : m.via === 'overflow' ? '・計画の外' : m.earlier ? '・前倒し' : ''}</span></li>`).join('');
+    $('#cantList').innerHTML = plan.moves.map(moveLine).join('');
     $('#cantYes').textContent = '組み直す';
     show('#cantBack');
   }
@@ -652,8 +857,10 @@
     const last = S.meta.lastCant;
     if (!last || !Array.isArray(last.plans)) return;
     const moved = new Set(last.moved || last.plans.map(o => o.id));
-    if (last.plans.some(o => moved.has(o.id) && sessionsOfPlan(o.id).length > (o.sessionCount || 0))) { toast('組み直したあとに実績がついたコマがあるため、戻せません'); return; }
+    if (last.plans.some(o => moved.has(o.id) && sessionsOfPlan(o.id).length > (o.sessionCount || 0))
+      || (last.created || []).some(id => sessionsOfPlan(id).length)) { toast('組み直したあとに実績がついたコマがあるため、戻せません'); return; }
     await DB.putMany('plans', last.plans.map(({ sessionCount, ...o }) => o));
+    for (const id of last.created || []) await DB.del('plans', id);
     await DB.setMeta('lastCant', null);
     hide('#adjustBack'); await commit(); toast(last.kind === 'flow' ? '組み直す前の予定に戻しました' : '送る前の予定に戻しました');
   }
@@ -661,10 +868,18 @@
   $('#cantYes').onclick = async () => {
     const plan = cantPlan; if (!plan) return;
     cantPlan = null;
-    const before = [], next = [];
+    const before = [], next = [], created = [];
     for (const m of plan.moves) {
+      const minutes = m.minutes != null ? m.minutes : m.plan.minutes;
+      if (m.cont) {            // やりかけのコマ：元の予定は残し、残りの分を続きの予定として作る
+        const p = m.plan;
+        next.push({ id: m.newId, date: m.to.date, start: m.to.start, minutes, cardId: p.cardId, name: p.name, category: p.category,
+          unitId: p.unitId, fixed: false, status: 'active', notifyAt: null, userEdited: true, cont: Number(m.newId.split('-c').pop()) || 1 });
+        created.push(m.newId);
+        continue;
+      }
       before.push({ ...m.plan });
-      next.push({ ...m.plan, date: m.to.date, start: m.to.start, status: 'active', notifyAt: null, userEdited: true });
+      next.push({ ...m.plan, date: m.to.date, start: m.to.start, minutes, status: 'active', notifyAt: null, userEdited: true });
     }
     for (const b of plan.buffers) {
       const p = planById(b.id); if (!p) continue;
@@ -676,7 +891,7 @@
       next.push({ ...r.plan, date: r.to.date, start: r.to.start, early: r.early, notifyAt: null, userEdited: true });
     }
     await DB.putMany('plans', next);
-    await DB.setMeta('lastCant', { at: Date.now(), date: plan.date, kind: plan.kind || 'cant', plans: before, moved: plan.moves.map(m => m.plan.id) });
+    await DB.setMeta('lastCant', { at: Date.now(), date: plan.date, kind: plan.kind || 'cant', plans: before, moved: plan.moves.filter(m => !m.cont).map(m => m.plan.id), created });
     hide('#cantBack'); await commit(); toast(`${plan.moves.length}コマを組み直しました`);
   };
   $('#undoCant').onclick = undoLast;
@@ -737,11 +952,12 @@
     const backlog = units.filter(u => uDate(u) < t && unitCheckable(u) && !unitDone(u)).length;
     const limit = (meta && meta.backlogLimit) || 4;
     const flow = planFlow(), last = S.meta.lastCant;
-    const flowBtn = flow.moves.length ? `<button class="btn primary" id="flowBtn">${flow.displaced ? '組み直す' : '前に詰める'}</button>` : '';
+    const flowBtn = flow.moves.length ? `<button class="btn primary" id="flowBtn">${flow.displaced || flow.shortened ? '組み直す' : '前に詰める'}</button>` : '';
     const undoBtn = last ? `<button class="btn ghost" id="flowUndo">${undoLabel(last)}</button>` : '';
     const text = backlog > limit ? `積み残しが${backlog}コマあります。新しい講義を止めて、回収を優先してください。`
       : backlog > 0 ? `積み残し ${backlog}コマ（${limit}コマを超えたら回収を優先）`
-        : (flow.pulled ? `先に終えたコマがあります。続きの${flow.pulled}コマを前へ詰められます。` : (last ? '予定を組み直しました。' : ''));
+        : flow.shortened ? `途中まで進んだコマがあります。残りの分だけの長さに組み直せます。`
+          : flow.pulled ? `先に終えたコマがあります。続きの${flow.pulled}コマを前へ詰められます。` : (last ? '予定を組み直しました。' : '');
     $('#backlog').innerHTML = text ? `<div class="notice flowbar${backlog > limit ? ' warn' : ''}"><span>${text}</span>${flowBtn}${undoBtn}</div>` : '';
 
     $$('#planTabs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.f === planFilter ? 'true' : 'false'));
@@ -755,11 +971,11 @@
       const doneN = all.filter(unitDone).length;
       h += `<section class="pday${d === t ? ' today' : ''}"><div class="rail"><span class="d">${md(d)}</span><span class="w">${WD[dd.getDay()]}曜日</span>${d === t ? '<span class="badge">今日</span>' : ''}<span class="c">${all.length ? `完了 ${doneN}/${all.length}` : '予備日'}</span></div><div>`;
       for (const u of list) {
-        const p = planById('u-' + u.id), done = unitDone(u), isRun = run && run.unitId === u.id;
+        const p = unitPlan(u), done = unitDone(u), isRun = run && run.unitId === u.id;
         const measured = unitMeasured(u);
         h += `<div class="unit${done ? ' done' : ''}" data-uid="${u.id}">
           <div class="head"><span class="pill ${u.k}">${esc(u.subj)}</span><span class="ttl">${esc(u.title)}</span></div>
-          ${p ? `<div class="time">${hm(p.start)}〜${hm(p.start + p.minutes)}${p.status === 'skipped' ? '・スキップ' : ''}${p.date !== u.date ? `・${md(u.date)}から移動` : ''}</div>` : ''}
+          ${p ? `<div class="time">${hm(p.start)}〜${hm(p.start + p.minutes)}${p.status === 'skipped' ? '・スキップ' : ''}${p.date !== u.date ? `・${md(u.date)}から移動` : ''}${unitPartial(u) ? `・残り${remMin(u)}分` : ''}</div>` : ''}
           ${unitCheckable(u) ? `<div class="checks">
             ${u.lec ? `<label class="chk"><input type="checkbox" data-ucheck="lecDone"${u.lecDone ? ' checked' : ''}>講義</label>` : ''}
             ${u.exLabel ? `<label class="chk"><input type="checkbox" data-ucheck="exDone"${u.exDone ? ' checked' : ''}>${esc(u.exLabel)}</label>` : ''}</div>` : ''}
@@ -1063,6 +1279,8 @@ ${diagBox()}
   $('#nowCard').addEventListener('click', e => {
     const b = e.target.closest('[data-act]'); if (!b) return;
     if (b.dataset.act === 'finish') finish('phone');
+    else if (b.dataset.act === 'pause') pauseRun();
+    else if (b.dataset.act === 'resume') resumeRun();
     else if (b.dataset.act === 'start') startPlan(b.dataset.id);
     else if (b.dataset.act === 'skip') skipPlan(b.dataset.id, true);
   });
@@ -1092,13 +1310,13 @@ ${diagBox()}
         if (u && unitDone(u)) continue;
         // 通知時刻 when は「10分後」を押した場合だけ遅れる（予定の開始時刻 start は変えない）
         const when = p.notifyAt || DB.epochOf(p.date, p.start);
-        if (when > now - 15 * 60000) items.push({ id: p.id, date: p.date, name: p.name, start: p.start, minutes: p.minutes, when });
+        if (when > now - 15 * 60000) items.push({ id: p.id, date: p.date, name: pName(p), start: p.start, minutes: p.minutes, when });
       }
       try { n.replaceSchedule(JSON.stringify(items)); } catch (_) { }
     }
     if (n.setRunning) {
-      const r = runningS();
-      try { n.setRunning(r ? JSON.stringify({ sessionId: r.id, planId: r.planId, name: r.name, startedAt: r.startedAt, endAt: plannedEnd(r) }) : ''); } catch (_) { }
+      const r = runningS();     // 中断中は「計測していない」として渡し、終了確認の通知を止める（再開したら出し直す）
+      try { n.setRunning(r && !isPaused(r) ? JSON.stringify({ sessionId: r.id, planId: r.planId, name: r.name, startedAt: r.startedAt, endAt: plannedEnd(r) }) : ''); } catch (_) { }
     }
   }
   /* Androidアプリの上下の帯（ステータスバー・ナビゲーションバーの裏）を、画面の色に合わせる。
@@ -1113,14 +1331,14 @@ ${diagBox()}
   /* 通知のボタン1回分を記録に反映する。at は押された時刻（ミリ秒）。省略時はいま。 */
   async function applyNativeAction(action, id, at) {
     at = Number(at) || Date.now();
-    if (action === 'start') { const r = await DB.startPlan(id, 'watch', at); return r.ok ? '通知から計測を開始しました' : null; }
+    if (action === 'start') { const r = await DB.startPlan(id, 'watch', at, pName(planById(id))); return r.ok ? '通知から計測を開始しました' : null; }
     if (action === 'skip') { await DB.skipPlan(id, true); return 'スキップを記録しました'; }
     if (action === 'snooze10') { await DB.snoozePlan(id, 10, at); return '10分後にもう一度通知します'; }
     if (action === 'finish') { const r = await DB.finishRunning('watch', at); return r.ok ? { finished: r.session } : null; }
     if (action === 'extend15') {
       const r = runningS(); if (!r) return null;
       const base = plannedMin(r) - (r.extendMin || 0);
-      const extendMin = Math.max((r.extendMin || 0) + 15, Math.ceil((at + 15 * 60000 - r.startedAt) / 60000) - base);
+      const extendMin = Math.max((r.extendMin || 0) + 15, Math.ceil((at + 15 * 60000 - r.startedAt) / 60000) - pausedMin(r) - base);
       await DB.put('sessions', { ...r, extendMin });
       return '15分延長しました';
     }
@@ -1133,8 +1351,7 @@ ${diagBox()}
     if (typeof last === 'string') { toast(last); return; }
     const s = last.finished;
     toast(`完了を記録しました（${fmt(sessMin(s))}）`);
-    const u = s.unitId && unitById(s.unitId);
-    if (u && unitCheckable(u) && !anySheetOpen()) openUnit(u.id);
+    if (s.category === 'study' && subjects().length && !anySheetOpen()) openDid(s.id);
   }
   window.dayFlowNotificationAction = async function (action, id, at) {   // v1.2 のアプリ用（直接呼び出し）
     await reload();
@@ -1168,7 +1385,7 @@ ${diagBox()}
       else lines.push(actMin ? `今日は予定のない日だけど、${fmt(actMin)}勉強したよ。` : '今日は勉強の予定がない日だよ。');
       const r = runningS(), p = r ? null : nextPlan();
       if (r) lines.push(`いまは「${r.name}」の途中。${fmt(sessMin(r))}たったよ。`);
-      else if (p && p.start + p.minutes > nowMin()) lines.push(p.start > nowMin() ? `次は${hm(p.start)}から「${p.name}」だよ。` : `「${p.name}」の時間だよ。始める？`);
+      else if (p && p.start + p.minutes > nowMin()) lines.push(p.start > nowMin() ? `次は${hm(p.start)}から「${pName(p)}」だよ。` : `「${pName(p)}」の時間だよ。始める？`);
     } else if (k < t) {
       lines.push(planMin || actMin ? `この日の勉強は${fmt(actMin)}／予定${fmt(planMin)}だったよ。` : 'この日は勉強の記録がないよ。');
     } else {

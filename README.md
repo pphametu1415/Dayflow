@@ -5,7 +5,7 @@
 
 設計書：<https://claude.ai/artifact/H1h9yxUyuY3gFMKBqnq1Us>（非公開。持ち主のClaudeから読める）
 
-## いまの状態（2026-11-17）
+## いまの状態（2026-11-18）
 
 | 段階 | 内容 | 状態 |
 | --- | --- | --- |
@@ -20,6 +20,7 @@
 | 8 | 「組み直す」（積み残しの精算と前倒し）、海の明るさの切り替え | 実装済み（v2.4.0） |
 | 9 | 通知が届かない（2026-11-17、スマホにもWatchにも来なかった） | 解決。Braveのホーム画面ショートカット（ブラウザ版）を開いていたため。ブラウザ版では注意を出す（v2.4.2）。診断は設定画面の「通知の診断」 |
 | 10 | 24時以降の記録、背景を泳ぐ生き物、生き物の吹き出し | 実装済み（v2.5.0） |
+| 11 | 計測の中断・再開、「やったこと」（科目・講義の回・どの回の演習を別々に記録）、途中までの進み具合に合わせた組み直し | 実装済み（v2.6.0） |
 
 ## ファイル
 
@@ -51,16 +52,16 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 | ストア | 主な項目 |
 | --- | --- |
 | `cards` | `id` `name` `category` `minutes` `order` |
-| `units` | `id` `month` `seq` `date` `slot` `subj` `k` `title` `lec` `exLabel` `note` `est` ／ 本人の記録：`lecDone` `exDone` `memo` `manualMin` |
-| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` `absorbed` `early` |
-| `sessions` | `id` `date` `planId` `unitId` `cardId` `name` `category` `startedAt` `endedAt`（計測中は `null`） `startSource` `endSource` `needsCheck` `extendMin` |
+| `units` | `id` `month` `seq` `date` `slot` `subj` `k` `title` `lec` `exLabel` `note` `est` `lecMin` `exMin`（任意） ／ 本人の記録：`lecDone` `exDone` `memo` `manualMin` |
+| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` `absorbed` `early` `cont`（続きの予定の番号） |
+| `sessions` | `id` `date` `planId` `unitId` `cardId` `name` `category` `startedAt` `endedAt`（計測中は `null`） `startSource` `endSource` `needsCheck` `extendMin` `pauses`（`[{from, to}]`） `pauseMin` `did`（`['g07a:lec', 'g07b:lec']`） |
 | `reviews` | `date` `study` `exercise` `sleep`（各1〜3） `sleepHours` `note` |
 | `meta` | `key` `value`（`seeded`、`notifyCats`、`lastExport`、`units:YYYY-MM`、`lastCant`） |
 | `log` | 通知テストの記録 |
 
 決まり：
 
-- 実績の分数は保存しない。`startedAt` と `endedAt` から毎回計算する。
+- 実績の分数は保存しない。`startedAt` と `endedAt` から毎回計算する。中断した時間（`pauses` の合計＋`pauseMin`）は引く。
 - コマ1つにつき予定を1つ作る。予定のIDは `u-` ＋ コマのID。
 - `planId` のない実績が「予定なしで開始」。
 - 「10分後」は予定の `start` を変えず、`notifyAt`（通知時刻）だけ遅らせる。
@@ -85,7 +86,30 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 - 遅れているとき：過ぎた日の未完了コマを、これからの枠へ順番どおりに入れ直す。足りない分は予備の枠、それでも足りなければ計画の外。
 - 進んでいるとき：先に終えたコマの枠が空くので、続きのコマを1つずつ前へ詰める（ボタンは「前に詰める」）。予備の枠は使わない。
 - 先に終えたコマの予定は、計測していれば実際にやった日時へ合わせる。計測していなければ `early: true` にしてタイムラインから隠す。
-- やりかけ（実績がついた）コマと、固定した予定は動かさない。直前の1回は元に戻せる（`lastCant` を共用）。
+- 固定した予定は動かさない（やりかけのコマは下の「続きの予定」で扱う）。直前の1回は元に戻せる（`lastCant` を共用）。
+
+中断・再開（v2.6.0）：
+
+- 計測中のカードに［中断］、中断中は［再開］。`pauses` に `{from, to}` を足していく（`to` が `null` なら中断中）。
+- 中断中は、終了の確認（30分超過のシートとAndroidアプリの「終わった？」通知）を止める。予定の終了は中断した分だけ後ろへずれる。
+- 中断したまま完了すると、中断した時点で終わったことにする（Watchから完了を押した場合も同じ）。
+- タイムラインの実績は開始〜終了の幅で描き、中断した部分を縞で見せる。実績の修正シートの「うち中断（分）」で後から直せる（直すと `pauses` は捨てて `pauseMin` だけ持つ）。
+- Watchの通知には中断のボタンはない（スマホの画面から操作する）。
+
+やったこと（v2.6.0）：
+
+- 勉強の実績を完了すると「やったこと」のシートが開く。科目を選び、講義の回ごとに［講義］［A問題（復習・暗記）］を別々に押す。予定と違う回まで進んだ日もそのまま記録できる。実績の修正シートからも開ける。
+- 押したものはコマの `lecDone`／`exDone` になり、実績の `did` に `コマID:lec`／`コマID:ex` として残る。
+- `did` のある実績は、分数を目安の長さ（講義 `lecMin`、演習 `exMin`）で按分して各コマの実績にする。`did` がなければ、予定から始めた実績はそのコマの分。
+- `lecMin`／`exMin` がないコマは、講義55分（1.4倍速）＋残りを演習とみる（行政法規 55＋75、鑑定理論 55＋45、積み残し 0＋75）。
+
+組み直し（v2.6.0 で変えたところ）：
+
+- 途中までやったコマ（講義だけ済んだ、など）は、残っている分の長さで入れる。
+- 枠は「続いている時間」ごとにまとめ、計画データの時間帯（`slots` の `label`、例 20:00–22:30）の終わりまで使う（ほかの予定の手前まで）。短くなったコマの空いた時間には、次のコマを詰める。
+- 実績がついたのに終わっていないコマ（やりかけ）は、元の予定をその日の履歴として残し、残りの分を続きの予定（ID `u-コマID-c1`、`cont: 1`）として入れ直す。コマの「いまの予定」は、いちばん番号の大きい続き。
+- 計測中のコマは動かさない。元に戻すと、作った続きの予定は消える（`lastCant.created`）。
+- 「この日は無理」も、途中までやったコマは残りの分の長さで送る。
 
 海の明るさ（設定画面）：
 

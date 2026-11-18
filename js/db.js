@@ -101,11 +101,11 @@
     await put('sessions', s);
     return { ok: true, session: s };
   }
-  async function startPlan(planId, source, at) {
+  async function startPlan(planId, source, at, name) {
     const p = await get('plans', planId);
     if (!p) return { ok: false, reason: 'noplan' };
     if (p.status === 'skipped') { p.status = 'active'; await put('plans', p); }
-    return startSession({ planId: p.id, unitId: p.unitId, cardId: p.cardId, name: p.name, category: p.category, source, at });
+    return startSession({ planId: p.id, unitId: p.unitId, cardId: p.cardId, name: name || p.name, category: p.category, source, at });
   }
   async function startCard(cardId, source) {
     const c = await get('cards', cardId);
@@ -113,9 +113,33 @@
     return startSession({ cardId: c.id, name: c.name, category: c.category, source });
   }
   /* source: 'phone' | 'watch' | 'auto' | 'edited'。自動終了は needsCheck=true で後から直せるようにする。 */
+  /* 中断・再開。pauses は [{ from, to }]（to が null なら中断中）。実績の分数からは中断した時間を除く。 */
+  const openPause = s => (s.pauses || []).find(p => p.to == null) || null;
+  async function pauseRunning(at) {
+    const r = await running();
+    if (!r) return { ok: false, reason: 'none' };
+    if (openPause(r)) return { ok: true, session: r };
+    r.pauses = [...(r.pauses || []), { from: Math.max(r.startedAt, at || Date.now()), to: null }];
+    await put('sessions', r);
+    return { ok: true, session: r };
+  }
+  async function resumeRunning(at) {
+    const r = await running();
+    if (!r) return { ok: false, reason: 'none' };
+    const p = openPause(r);
+    if (!p) return { ok: true, session: r };
+    p.to = Math.max(p.from, at || Date.now());
+    await put('sessions', r);
+    return { ok: true, session: r };
+  }
   async function finishRunning(source, at, needsCheck) {
     const r = await running();
     if (!r) return { ok: false, reason: 'none' };
+    const op = openPause(r);
+    if (op) {                 // 中断したまま完了したら、中断した時点で終わったことにする
+      r.pauses = r.pauses.filter(p => p !== op);
+      at = Math.min(at || Date.now(), op.from);
+    }
     r.endedAt = Math.max(r.startedAt + 1000, at || Date.now());
     r.endSource = source || 'phone';
     r.needsCheck = !!needsCheck;
@@ -226,7 +250,7 @@
     all, get, put, del, putMany, clear,
     pad, dateKey, keyToDate, epochOf, parseHm, uid, DAY_SHIFT_MIN, dayOf, minOn, dayMin,
     getMeta, setMeta, ensureSeed,
-    running, startSession, startPlan, startCard, finishRunning, extendRunning,
+    running, startSession, startPlan, startCard, finishRunning, extendRunning, pauseRunning, resumeRunning, openPause,
     skipPlan, snoozePlan, importUnits, exportAll, importAll,
     addLog, getLog, clearLog
   };

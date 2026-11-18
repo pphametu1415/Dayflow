@@ -133,6 +133,8 @@
       <label class="field full">何をした<select id="sesWhat"></select></label>
       <label class="field">開始<input id="sesStart" type="time" required></label>
       <label class="field">終了<input id="sesEnd" type="time"></label>
+      <label class="field">うち中断（分）<input id="sesPause" type="number" inputmode="numeric" min="0" max="600" step="1"></label>
+      <div class="field" id="sesDidWrap"><span>やったこと</span><button type="button" class="btn didbtn" id="sesDid">記録する</button></div>
     </div>
     <p class="sub" id="sesNote"></p>
     <div class="actions">
@@ -148,13 +150,19 @@
   <div id="pickList" class="picklist"></div>
 </div></div>
 
-<!-- コマの完了チェック -->
-<div class="sheetback" id="unitBack"><div class="sheet" role="dialog" aria-labelledby="unitTitle">
-  <h2 id="unitTitle"></h2>
-  <p class="sub" id="unitSub"></p>
-  <div id="unitChecks" class="checks big"></div>
-  <label class="field full">メモ<textarea id="unitMemo" placeholder="つまずいた論点、間違えた問題番号など"></textarea></label>
-  <div class="actions"><button type="button" class="btn primary" id="unitSave">保存</button></div>
+<!-- やったこと（実績ごとに進んだところを記録する） -->
+<div class="sheetback" id="didBack"><div class="sheet" role="dialog" aria-labelledby="didTitle">
+  <h2 id="didTitle">やったこと</h2>
+  <p class="sub" id="didSub"></p>
+  <div class="choices subj" id="didSubj" role="group" aria-label="科目"></div>
+  <p class="sub didhelp">この時間でやったものを押してください。講義と演習は別々に付けられます。<span class="key"><i class="mine"></i>この実績でやった</span><span class="key"><i class="before"></i>前に終えた</span></p>
+  <div id="didRows" class="didrows"></div>
+  <button type="button" class="btn quiet wide" id="didMore">すべての回を表示</button>
+  <p class="sub" id="didCount"></p>
+  <div class="actions">
+    <button type="button" class="btn" id="didLater">あとで</button>
+    <button type="button" class="btn primary" id="didSave">保存</button>
+  </div>
 </div></div>
 
 <!-- 予定の調整 -->

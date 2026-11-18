@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """学習カレンダー（2026年11月版）のコマ定義を data/units-2026-11.json に書き出す。
 
+lecMin／exMin は、コマの中の講義と演習（A問題・復習）の目安の分数。途中までやったコマを組み直すときに、
+残りの長さの計算に使う（11月分の data は v1 のままで、アプリ側の既定値 講義55分＋残りが同じ値になる）。
+
 翌月分を作るときは、このファイルを複製して DAYS を書き換え、
 data/index.json に1行足すだけでよい（アプリのコードは触らない）。
 """
@@ -12,17 +15,17 @@ OUT = pathlib.Path(__file__).resolve().parent.parent / "data" / "units-2026-11.j
 
 def G(uid, title, slot):
     return dict(id=uid, subj="行政法規", k="g", title=title, slot=slot, lec=True,
-                exLabel="A問題", note="1問3分で分からなければ解説へ。上限75分", est=130)
+                exLabel="A問題", note="1問3分で分からなければ解説へ。上限75分", est=130, lecMin=55, exMin=75)
 
 
 def K(uid, title):
     return dict(id=uid, subj="鑑定理論", k="k", title=title, slot="PM", lec=True,
-                exLabel="復習・暗記", note="該当範囲の基準を穴埋め・音読で1周（45分）", est=100)
+                exLabel="復習・暗記", note="該当範囲の基準を穴埋め・音読で1周（45分）", est=100, lecMin=55, exMin=45)
 
 
 def B(uid, title):
     return dict(id=uid, subj="行政法規", k="g", title=title, slot="AM", lec=False,
-                exLabel="A問題", note="積み残し。所要時間を実測する", est=75)
+                exLabel="A問題", note="積み残し。所要時間を実測する", est=75, lecMin=0, exMin=75)
 
 
 def Y(uid, slot, est):
