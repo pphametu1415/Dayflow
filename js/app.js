@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const DB = window.DFDB, SEA = window.DFSea, THEME = window.DFTheme;
-  const APP_VERSION = '2.6.0';
+  const APP_VERSION = '2.6.1';
   const START = 6 * 60, END = 24 * 60 + DB.DAY_SHIFT_MIN, HOURPX = 64, PPM = HOURPX / 60;   // タイムラインは 6:00〜翌3:00
   const TARGET_WEEK_MIN = 24.5 * 60;               // 週の学習枠（平日2.5h×5＋休日6h×2）
   const OVERDUE_MIN = 30;                           // 予定終了からこの分数を過ぎたら終了を確認する
@@ -356,8 +356,69 @@
     show('#overdueBack');
   }
 
-  /* ---------- 予定シート ---------- */
+  /* ---------- 予定シート ----------
+     学習のカードなら「中身」も選べる（例：行政法規 8回前半 A問題）。選んだものは予定の todo に
+     'コマID:lec'／'コマID:ex' で持ち、名前と長さ（講義・演習の目安の合計）をそこから作る。
+     その予定を計測して完了すると、「やったこと」でこの中身が「予定していたもの」として出る。
+     コマ自身の予定はそのまま残る（終えたら「組み直す」で前へ詰められる）。 */
+  let planTodo = new Set(), planTodoSubj = '', planTodoAll = false;
   function cardOptions() { return S.cards.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join(''); }   // 長さは「予定時間」の欄で決める
+  const cardSubj = c => (c ? subjects().find(x => c.name.includes(x)) || '' : '');
+  function planTodoName(c) {
+    if (!c) return '';
+    const sum = didSummary({ did: [...planTodo] });
+    if (!sum) return c.name;
+    return cardSubj(c) ? sum : `${c.name}：${sum}`;
+  }
+  function renderPlanTodo() {
+    const p = editPlanId ? planById(editPlanId) : null;
+    const c = cardById($('#planCard').value);
+    const subs = subjects();
+    const show = !(p && p.unitId) && c && c.category === 'study' && subs.length > 0;
+    $('#planTodoWrap').hidden = !show;
+    if (!show) return;
+    const fixedSubj = cardSubj(c);
+    if (fixedSubj) planTodoSubj = fixedSubj;
+    else if (!subs.includes(planTodoSubj)) planTodoSubj = subs[0];
+    $('#planTodoSubj').hidden = !!fixedSubj;
+    $('#planTodoSubj').innerHTML = subs.map(x => `<button type="button" data-tsubj="${esc(x)}" aria-pressed="${x === planTodoSubj ? 'true' : 'false'}">${esc(x)}</button>`).join('');
+    const list = subjUnits(planTodoSubj);
+    const open = list.findIndex(u => (u.lec && !u.lecDone) || (u.exLabel && !u.exDone));
+    const picked = list.map((u, i) => ([...planTodo].some(k => splitDid(k)[0] === u.id) ? i : -1)).filter(i => i >= 0);
+    let from = 0, to = list.length;
+    if (!planTodoAll) {
+      const anchor = [open < 0 ? list.length - 1 : open, ...picked];
+      from = Math.max(0, Math.min(...anchor));
+      to = Math.min(list.length, Math.max(from + 4, Math.max(...anchor) + 1));
+    }
+    const chip = (u, part, label) => {
+      const on = planTodo.has(didKey(u.id, part)), done = part === 'lec' ? u.lecDone : u.exDone;
+      return `<button type="button" class="part${on ? ' mine' : ''}" data-tu="${u.id}" data-tp="${part}" aria-pressed="${on ? 'true' : 'false'}">${esc(label)}${done ? '<small>済</small>' : ''}</button>`;
+    };
+    $('#planTodoRows').innerHTML = list.slice(from, to).map(u =>
+      `<div class="didrow"><span class="ttl">${esc(u.title)}</span><span class="parts">${u.lec ? chip(u, 'lec', '講義') : ''}${u.exLabel ? chip(u, 'ex', u.exLabel) : ''}</span></div>`).join('')
+      || '<p class="sub">この科目のコマはありません。</p>';
+    $('#planTodoMore').hidden = list.length <= 4 && !planTodoAll;
+    $('#planTodoMore').textContent = planTodoAll ? '近くの回だけ表示' : `すべての回を表示（${list.length}コマ）`;
+    // 選んだコマの、元の予定の場所を知らせる
+    const where = [...new Set([...planTodo].map(k => splitDid(k)[0]))].map(unitById).filter(Boolean)
+      .map(u => { const up = unitPlan(u); return up && !unitDone(u) ? `${shortTitle(u)}は ${md(up.date)}（${wdOf(up.date)}）${hm(up.start)}` : ''; }).filter(Boolean);
+    $('#planTodoNote').textContent = where.length ? `コマの予定（${where.join('、')}）はそのまま残ります。終えたら計画の「組み直す」で前へ詰められます。` : '';
+  }
+  function todoMinutes() {
+    return [...planTodo].reduce((a, k) => { const [id, part] = splitDid(k), u = unitById(id); return a + (u ? partMin(u, part) : 0); }, 0);
+  }
+  $('#planTodoSubj').addEventListener('click', e => { const b = e.target.closest('[data-tsubj]'); if (!b) return; planTodoSubj = b.dataset.tsubj; planTodoAll = false; renderPlanTodo(); });
+  $('#planTodoRows').addEventListener('click', e => {
+    const b = e.target.closest('[data-tu]'); if (!b) return;
+    const k = didKey(b.dataset.tu, b.dataset.tp);
+    if (planTodo.has(k)) planTodo.delete(k); else planTodo.add(k);
+    const m = todoMinutes();
+    if (m) $('#planMinutes').value = Math.round(m / 5) * 5;
+    else { const c = cardById($('#planCard').value); if (c && !editPlanId) $('#planMinutes').value = c.minutes; }
+    renderPlanTodo(); previewPlan();
+  });
+  $('#planTodoMore').onclick = () => { planTodoAll = !planTodoAll; renderPlanTodo(); };
   function openPlan(id, min) {
     editPlanId = id; newPlanMin = min;
     const p = id ? planById(id) : null;
@@ -370,6 +431,9 @@
     if (unitLinked) $('#planUnitName').textContent = pName(p);
     const card = p ? cardById(p.cardId) : S.cards[0];
     if (card) $('#planCard').value = card.id;
+    planTodo = new Set(p && Array.isArray(p.todo) ? p.todo : []);
+    const first = [...planTodo].map(k => unitById(splitDid(k)[0])).find(Boolean);
+    planTodoSubj = first ? first.subj : cardSubj(card); planTodoAll = false;
     $('#planStart').value = hm(p ? p.start : min);
     $('#planMinutes').value = p ? p.minutes : (card ? card.minutes : 60);
     $('#planFixed').checked = !!(p && p.fixed);
@@ -377,6 +441,7 @@
     $('#planSkip').hidden = !p || sessionsOfPlan(p.id).length > 0;
     $('#planSkip').textContent = p && p.status === 'skipped' ? 'スキップを戻す' : 'スキップ';
     $('#planStartNow').hidden = !p || !!runningS();
+    renderPlanTodo();
     show('#planBack');
     previewPlan();
   }
@@ -392,14 +457,16 @@
     const start = clamp(snap(DB.dayMin(v)), 0, END - 5);
     const minutes = clamp(Number($('#planMinutes').value) || 0, 5, 600);
     const a = Math.max(start, tlFrom), b = Math.min(start + minutes, END);
+    const c = cardById($('#planCard').value);
+    const name = p && p.unitId ? pName(p) : planTodoName(c) || (p || {}).name || '';
     let blk = p ? el.querySelector(`[data-plan="${p.id}"]`) : null;
     if (!blk) {
-      const c = p ? cardById(p.cardId) : cardById($('#planCard').value);
       blk = document.createElement('div');
       blk.className = `blk plan ghost ${(p || c || {}).category || 'study'}`;
-      blk.innerHTML = `<span class="t">${esc((p || c || {}).name || '')}</span><span class="m" data-meta></span>`;
+      blk.innerHTML = `<span class="t"></span><span class="m" data-meta></span>`;
       el.append(blk);
     }
+    if (!(p && p.unitId)) { const t = blk.querySelector('.t'); if (t) t.textContent = name; }
     blk.hidden = b <= a;
     blk.style.top = `${(a - tlFrom) * PPM + 1}px`;
     blk.style.height = `${Math.max(24, (b - a) * PPM - 2)}px`;
@@ -408,8 +475,14 @@
   }
   ['#planStart', '#planMinutes'].forEach(id => $(id).addEventListener('input', previewPlan));
   $('#planCard').addEventListener('change', () => {
-    if (!editPlanId) { const c = cardById($('#planCard').value); if (c) $('#planMinutes').value = c.minutes; }
-    previewPlan();
+    const c = cardById($('#planCard').value);
+    // 別の科目のカードにしたら、選んだ中身は外す
+    const cs = cardSubj(c);
+    if (cs) planTodo = new Set([...planTodo].filter(k => { const u = unitById(splitDid(k)[0]); return u && u.subj === cs; }));
+    if (c && c.category !== 'study') planTodo = new Set();
+    planTodoAll = false;
+    if (!editPlanId && c) $('#planMinutes').value = todoMinutes() ? Math.round(todoMinutes() / 5) * 5 : c.minutes;
+    renderPlanTodo(); previewPlan();
   });
   // シートが閉じたら（保存しなかったときも）、タイムラインを元の表示に戻す
   new MutationObserver(() => { if (!$('#planBack').classList.contains('show') && view === 'day') renderTimeline(); })
@@ -419,15 +492,17 @@
     const start = clamp(snap(DB.dayMin($('#planStart').value)), 0, END - 5);
     const minutes = clamp(Number($('#planMinutes').value) || 60, 5, 600);
     const fixed = $('#planFixed').checked;
+    const c = cardById($('#planCard').value);
+    const todo = c && c.category === 'study' ? [...planTodo] : [];
     if (editPlanId) {
       const p = planById(editPlanId); if (!p) return;
       const next = { ...p, start, minutes, fixed, userEdited: true };
       if (start !== p.start) next.notifyAt = null;
-      if (!p.unitId) { const c = cardById($('#planCard').value); if (c) Object.assign(next, { cardId: c.id, name: c.name, category: c.category }); }
+      if (!p.unitId && c) Object.assign(next, { cardId: c.id, name: planTodoName(c), category: c.category, todo });
       await DB.put('plans', next);
     } else {
-      const c = cardById($('#planCard').value); if (!c) return;
-      await DB.put('plans', { id: DB.uid('p'), date: dateKey, start, minutes, cardId: c.id, name: c.name, category: c.category, unitId: null, fixed, status: 'active', notifyAt: null, userEdited: true });
+      if (!c) return;
+      await DB.put('plans', { id: DB.uid('p'), date: dateKey, start, minutes, cardId: c.id, name: planTodoName(c), category: c.category, unitId: null, todo, fixed, status: 'active', notifyAt: null, userEdited: true });
     }
     hide('#planBack'); await commit(); toast(editPlanId ? '予定を更新しました' : '予定を追加しました');
   });
@@ -544,20 +619,25 @@
     didDraft = new Map(S.units.filter(unitCheckable).map(u => [u.id, { lec: !!u.lecDone, ex: !!u.exDone }]));
     didMine = new Set(didOf(s).filter(k => { const [uid, part] = splitDid(k), d = didDraft.get(uid); return d && d[part]; }));
     const first = didOf(s).map(k => unitById(splitDid(k)[0])).find(Boolean);
-    const planned = s.unitId && unitById(s.unitId), card = s.cardId && cardById(s.cardId);
+    const planned = s.unitId ? unitById(s.unitId) : plannedTodo(s).map(k => unitById(splitDid(k)[0])).find(Boolean);
+    const card = s.cardId && cardById(s.cardId);
     didSubj = (first || planned || {}).subj
       || subs.find(x => (card && card.name.includes(x)) || String(s.name || '').includes(x)) || subs[0];
     $('#didSub').textContent = `${md(s.date)} ${hmE(s.startedAt)}〜${s.endedAt == null ? '計測中' : hmE(s.endedAt)}・${fmt(sessMin(s))}${pausedMin(s) ? `（中断${fmt(pausedMin(s))}）` : ''}`;
     renderDid();
     show('#didBack');
   }
+  // 実績のもとの予定に選んであった中身
+  const plannedTodo = s => { const p = s.planId && planById(s.planId); return p && Array.isArray(p.todo) ? p.todo : []; };
   function renderDid() {
     const s = S.sessions.find(x => x.id === didSesId); if (!s) return;
+    const todo = new Set(plannedTodo(s));
+    const isPlanned = u => u.id === s.unitId || [...todo].some(k => splitDid(k)[0] === u.id);
     const subs = subjects();
     $('#didSubj').innerHTML = subs.map(x => `<button type="button" data-dsubj="${esc(x)}" aria-pressed="${x === didSubj ? 'true' : 'false'}">${esc(x)}</button>`).join('');
     const list = subjUnits(didSubj);
     const open = list.findIndex(u => { const d = didDraft.get(u.id); return (u.lec && !d.lec) || (u.exLabel && !d.ex); });
-    const mineIdx = list.map((u, i) => ([...didMine].some(k => splitDid(k)[0] === u.id) || u.id === s.unitId ? i : -1)).filter(i => i >= 0);
+    const mineIdx = list.map((u, i) => ([...didMine].some(k => splitDid(k)[0] === u.id) || isPlanned(u) ? i : -1)).filter(i => i >= 0);
     let from = 0, to = list.length;
     if (!didAll) {
       const anchor = [open < 0 ? list.length - 1 : open, ...mineIdx];
@@ -566,10 +646,11 @@
     }
     const chip = (u, part, label) => {
       const on = didDraft.get(u.id)[part], mine = didMine.has(didKey(u.id, part));
-      return `<button type="button" class="part${on ? (mine ? ' mine' : ' before') : ''}" data-du="${u.id}" data-dp="${part}" aria-pressed="${on ? 'true' : 'false'}">${esc(label)}${on && !mine ? '<small>済</small>' : ''}</button>`;
+      const plan = todo.has(didKey(u.id, part)) && !on;
+      return `<button type="button" class="part${on ? (mine ? ' mine' : ' before') : ''}${plan ? ' plan' : ''}" data-du="${u.id}" data-dp="${part}" aria-pressed="${on ? 'true' : 'false'}">${esc(label)}${on && !mine ? '<small>済</small>' : plan ? '<small>予定</small>' : ''}</button>`;
     };
     $('#didRows').innerHTML = list.slice(from, to).map(u =>
-      `<div class="didrow${u.id === s.unitId ? ' planned' : ''}"><span class="ttl">${esc(u.title)}${u.id === s.unitId ? '<small>予定していたコマ</small>' : ''}</span>
+      `<div class="didrow${isPlanned(u) ? ' planned' : ''}"><span class="ttl">${esc(u.title)}${u.id === s.unitId ? '<small>予定していたコマ</small>' : isPlanned(u) ? '<small>予定していた中身</small>' : ''}</span>
         <span class="parts">${u.lec ? chip(u, 'lec', '講義') : ''}${u.exLabel ? chip(u, 'ex', u.exLabel) : ''}</span></div>`).join('')
       || '<p class="sub">この科目のコマはありません。</p>';
     $('#didMore').hidden = list.length <= 6 && !didAll;

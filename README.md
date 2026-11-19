@@ -21,6 +21,7 @@
 | 9 | 通知が届かない（2026-11-17、スマホにもWatchにも来なかった） | 解決。Braveのホーム画面ショートカット（ブラウザ版）を開いていたため。ブラウザ版では注意を出す（v2.4.2）。診断は設定画面の「通知の診断」 |
 | 10 | 24時以降の記録、背景を泳ぐ生き物、生き物の吹き出し | 実装済み（v2.5.0） |
 | 11 | 計測の中断・再開、「やったこと」（科目・講義の回・どの回の演習を別々に記録）、途中までの進み具合に合わせた組み直し | 実装済み（v2.6.0） |
+| 12 | 予定を追加するときに中身（科目・講義の回・どの回の演習）を選ぶ | 実装済み（v2.6.1） |
 
 ## ファイル
 
@@ -53,7 +54,7 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 | --- | --- |
 | `cards` | `id` `name` `category` `minutes` `order` |
 | `units` | `id` `month` `seq` `date` `slot` `subj` `k` `title` `lec` `exLabel` `note` `est` `lecMin` `exMin`（任意） ／ 本人の記録：`lecDone` `exDone` `memo` `manualMin` |
-| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` `absorbed` `early` `cont`（続きの予定の番号） |
+| `plans` | `id` `date` `start`（0時からの分） `minutes` `cardId` `name` `category` `unitId` `fixed` `status`（`active`／`skipped`） `notifyAt` `userEdited` `absorbed` `early` `cont`（続きの予定の番号） `todo`（自分で足した予定の中身。`['g08a:ex']`） |
 | `sessions` | `id` `date` `planId` `unitId` `cardId` `name` `category` `startedAt` `endedAt`（計測中は `null`） `startSource` `endSource` `needsCheck` `extendMin` `pauses`（`[{from, to}]`） `pauseMin` `did`（`['g07a:lec', 'g07b:lec']`） |
 | `reviews` | `date` `study` `exercise` `sleep`（各1〜3） `sleepHours` `note` |
 | `meta` | `key` `value`（`seeded`、`notifyCats`、`lastExport`、`units:YYYY-MM`、`lastCant`） |
@@ -102,6 +103,13 @@ IndexedDB（データベース名 `dayflow`）。予定と実績は別レコー�
 - 押したものはコマの `lecDone`／`exDone` になり、実績の `did` に `コマID:lec`／`コマID:ex` として残る。
 - `did` のある実績は、分数を目安の長さ（講義 `lecMin`、演習 `exMin`）で按分して各コマの実績にする。`did` がなければ、予定から始めた実績はそのコマの分。
 - `lecMin`／`exMin` がないコマは、講義55分（1.4倍速）＋残りを演習とみる（行政法規 55＋75、鑑定理論 55＋45、積み残し 0＋75）。
+
+予定の中身（v2.6.1）：
+
+- 学習のカードで予定を追加・編集するとき、「中身（任意）」で回ごとに［講義］［A問題］を選べる。選ぶと予定の名前（例：行政法規 8回前半 A問題）と長さ（目安の合計）が変わる。
+- 「積み残しの回収」のように科目の決まっていないカードは、科目も選べる。
+- その予定を計測して完了すると、「やったこと」で選んでおいた中身に「予定」の印が出る（押すまでは記録されない）。
+- コマ自身の予定はそのまま残る。終えたら「組み直す」で前へ詰める。
 
 組み直し（v2.6.0 で変えたところ）：
 

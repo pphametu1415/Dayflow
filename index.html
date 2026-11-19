@@ -114,6 +114,12 @@
       <p class="field full unitname" id="planUnitName" hidden></p>
       <label class="field">開始時刻<input id="planStart" type="time" step="300" required></label>
       <label class="field">予定時間（分）<input id="planMinutes" type="number" inputmode="numeric" min="5" max="600" step="5" required></label>
+      <div class="field full" id="planTodoWrap"><span>中身（任意）<small class="todohint">回ごとに講義・演習を選べます。選ぶと名前と長さが変わります</small></span>
+        <div class="choices subj" id="planTodoSubj" role="group" aria-label="科目"></div>
+        <div class="didrows" id="planTodoRows"></div>
+        <button type="button" class="btn quiet wide" id="planTodoMore"></button>
+        <p class="sub" id="planTodoNote"></p>
+      </div>
       <label class="field full switch"><span>固定する<small>調整や長押しで動かさない</small></span><input id="planFixed" type="checkbox"></label>
     </div>
     <div class="actions">
